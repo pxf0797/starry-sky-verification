@@ -73,6 +73,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       </div>
     </div>
 
+    <div class="panel"><h3>动画播放</h3>
+      <div class="ctrl"><label>持仓步进</label><div class="row"><input type="range" id="animStep" min="0" max="100" step="1" value="0" oninput="onAnimStep()"><span class="val" id="animStepVal">0</span></div></div>
+      <div class="btn-row">
+        <button class="btn-green" id="btnPlay" onclick="togglePlay()">▶ 播放</button>
+        <button class="btn-grey" onclick="animReset()">⏮ 重置</button>
+      </div>
+      <div style="font-size:.68em;color:#78909c;margin-top:4px">拖动滑块或点击播放，逐帧观察持仓期间残差和自信度的变化</div>
+    </div>
+
     <div class="panel"><h3>拟合参数</h3>
       <div class="ctrl"><label>多项式阶数 k</label><select id="fitDegree" onchange="refit()">
         <option value="1">k=1 一次 (直线)</option><option value="2">k=2 二次 (抛物线)</option>
@@ -91,6 +100,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       <div class="btn-row">
         <button class="btn-blue" onclick="refit()">📐 重新拟合</button>
         <button class="btn-grey" onclick="resetAll()">↺ 重置默认</button>
+      </div>
+    </div>
+
+    <div class="panel"><h3>拟合质量</h3>
+      <div style="font-size:.72em;line-height:1.8">
+        <div>R² = <span id="fitR2" style="color:#66bb6a;font-weight:bold">--</span></div>
+        <div>RMSE = <span id="fitRMSE" style="color:#ff9800">--</span></div>
+        <div>拐点 t = <span id="fitInflection" style="color:#64b5f6">--</span></div>
+        <div>残差白噪声: <span id="fitLB" style="font-weight:bold">--</span></div>
+        <div style="margin-top:4px;font-size:.9em;color:#90caf9" id="fitAdvice">--</div>
       </div>
     </div>
 
@@ -268,16 +287,49 @@ function plotAll(data, result, params){
   const {t,clean,noisy}=data;
   const {coeffs,i0,fitEnd,tFit,yFit,tPred,yPred,residuals,smoothedResiduals,thresholds,confidences,zones,predStart,predEnd,lam}=result;
 
+  // Confidence bands
+  const residForBands=residuals.map(r=>r.resid);
+  const residStd=Math.sqrt(residForBands.reduce((s,r)=>s+Math.abs(r),0)/Math.max(residForBands.length,1));
+  const bandT=[],bandU1=[],bandL1=[],bandU2=[],bandL2=[];
+  for(let i=0;i<tPred.length;i++){
+    const holdTime=tPred[i]-tPred[0];
+    const extra=1+0.12*Math.max(holdTime,0);
+    bandT.push(tPred[i]);
+    const p=yPred[i];
+    const h=residStd*extra;
+    bandU1.push(p+h);bandL1.push(p-h);
+    bandU2.push(p+2*h);bandL2.push(p-2*h);
+  }
+
+  // Inflection point
+  const a=coeffs[0],b=coeffs[1];
+  const inflT=Math.abs(a)>1e-10?-b/(3*a):null;
+
   // Chart 1: Price + Fit
   const traces1=[
     {x:t,y:clean,type:'scatter',mode:'lines',name:'真实信号',line:{color:'rgba(120,144,156,0.3)',width:1,dash:'dot'},hoverinfo:'skip'},
     {x:t,y:noisy,type:'scatter',mode:'lines',name:'观测价格',line:{color:plotColors.price,width:2.2}},
     {x:tFit,y:yFit,type:'scatter',mode:'markers',name:'拟合窗口',marker:{color:plotColors.fit,size:5,symbol:'circle-open'}},
     {x:tPred,y:yPred,type:'scatter',mode:'lines',name:`k=${params.degree} 预测轨迹`,line:{color:plotColors.pred,width:2.8,dash:'dash'}},
+    // confidence bands
+    {x:[...bandT,...bandT.reverse()],y:[...bandU1,...bandL1.reverse()],type:'scatter',mode:'lines',fill:'toself',
+      fillcolor:'rgba(255,152,0,0.08)',line:{width:0},name:'±1σ 预测带',hoverinfo:'skip'},
+    {x:[...bandT,...bandT.reverse()],y:[...bandU2,...bandL2.reverse()],type:'scatter',mode:'lines',fill:'toself',
+      fillcolor:'rgba(255,152,0,0.04)',line:{width:0},name:'±2σ 预测带',hoverinfo:'skip'},
     // entry line
     {x:[t[i0],t[i0]],y:[Math.min(...noisy)-0.5,Math.max(...noisy)+0.5],type:'scatter',mode:'lines',
       line:{color:'rgba(255,255,255,0.3)',width:1,dash:'dot'},name:'开仓点',hoverinfo:'skip'},
   ];
+
+  // Inflection point marker
+  const anns=[];
+  if(inflT!==null&&inflT>=t[fitEnd]&&inflT<=t[predEnd-1]){
+    const inflY=polyval(coeffs,inflT);
+    traces1.push({x:[inflT],y:[inflY],type:'scatter',mode:'markers',
+      marker:{size:12,color:'#ce93d8',symbol:'diamond'},name:'拐点 t=-b/(3a)'});
+    anns.push({x:inflT,y:inflY,text:'拐点',showarrow:true,arrowhead:2,ax:20,ay:-25,
+      font:{color:'#ce93d8',size:10}});
+  }
 
   // Zone shading
   const zoneColors=['rgba(102,187,106,0.06)','rgba(255,213,79,0.06)','rgba(239,83,80,0.08)'];
@@ -299,6 +351,7 @@ function plotAll(data, result, params){
     annotations:[
       {x:t[predStart],y:Math.max(...noisy)+0.3,text:'← 开仓',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
       {x:t[fitEnd],y:Math.max(...noisy)+0.3,text:'预测开始 →',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
+      ...anns,
     ],
   };
 
@@ -420,6 +473,35 @@ function updateStatus(data, result, params){
     vColor='#ffd54f';
   }
 
+  // Fit quality metrics
+  const fitMetrics=computeFitMetrics(data.noisy,data.t,result.coeffs,result.i0,result.fitEnd);
+  document.getElementById('fitR2').textContent=(fitMetrics.r2*100).toFixed(1)+'%';
+  document.getElementById('fitR2').style.color=fitMetrics.r2>0.8?'#66bb6a':fitMetrics.r2>0.5?'#ffd54f':'#ef5350';
+  document.getElementById('fitRMSE').textContent=fitMetrics.rmse.toFixed(4);
+  // Inflection point
+  const ca=result.coeffs[0],cb=result.coeffs[1];
+  if(Math.abs(ca)>1e-10){
+    const inflT=-cb/(3*ca);
+    document.getElementById('fitInflection').textContent=inflT.toFixed(3);
+  }else{
+    document.getElementById('fitInflection').textContent='N/A (a≈0)';
+  }
+  // Ljung-Box
+  const residVals=result.residuals.map(r=>r.resid);
+  const lb=computeLjungBox(residVals);
+  const lbEl=document.getElementById('fitLB');
+  if(lb.isWhite){
+    lbEl.textContent='是 (残差=白噪声)';
+    lbEl.style.color='#66bb6a';
+    document.getElementById('fitAdvice').textContent='拟合良好——残差无自相关结构，模型充分捕获了价格动态';
+    document.getElementById('fitAdvice').style.color='#66bb6a';
+  }else{
+    lbEl.textContent=`否 (Q=${lb.stat.toFixed(1)}, p≈${lb.pvalue.toFixed(3)})`;
+    lbEl.style.color='#ef5350';
+    document.getElementById('fitAdvice').textContent='残差存在自相关→模型可能遗漏了系统性的价格模式，考虑调整阶数或拟合窗口';
+    document.getElementById('fitAdvice').style.color='#ff9800';
+  }
+
   // Update discriminant
   if(result.coeffs&&result.coeffs.length===4){
     const [a,b,c,d]=result.coeffs;
@@ -437,9 +519,192 @@ function updateStatus(data, result, params){
     }
   }
 
+  // Animation slider max
+  const slider=document.getElementById('animStep');
+  slider.max=result.residuals.length-1;
+  animMaxSteps=result.residuals.length-1;
+
   const vel=document.getElementById('stVerdict');
   vel.textContent=verdict;vel.style.color=vColor;
   vel.style.background=vColor==='#66bb6a'?'#1b3a1b':vColor==='#ef5350'?'#3a1b1b':vColor==='#ffd54f'?'#3a3a1b':'#1a2a3a';
+}
+
+// ═══════════════════════════════════
+// Fit quality metrics
+// ═══════════════════════════════════
+function computeFitMetrics(noisy, t, coeffs, fitStart, fitEnd){
+  const tFit=t.slice(fitStart,fitEnd);
+  const yActual=noisy.slice(fitStart,fitEnd);
+  const yPred=tFit.map(ti=>polyval(coeffs,ti));
+  const meanY=yActual.reduce((a,b)=>a+b,0)/yActual.length;
+  const ssRes=yActual.reduce((s,y,i)=>s+(y-yPred[i])**2,0);
+  const ssTot=yActual.reduce((s,y)=>s+(y-meanY)**2,0);
+  const r2=1-ssRes/Math.max(ssTot,1e-15);
+  const rmse=Math.sqrt(ssRes/yActual.length);
+  return {r2,rmse,ssRes,ssTot};
+}
+
+function computeLjungBox(residuals, maxLag=5){
+  if(residuals.length<maxLag+2)return {stat:0,pvalue:1,isWhite:true};
+  const n=residuals.length;
+  const meanR=residuals.reduce((a,b)=>a+b,0)/n;
+  const centered=residuals.map(r=>r-meanR);
+  const varR=centered.reduce((s,r)=>s+r*r,0)/n;
+  if(varR<1e-15)return {stat:0,pvalue:1,isWhite:true};
+  let q=0;
+  for(let k=1;k<=maxLag;k++){
+    let acf=0;
+    for(let t=k;t<n;t++)acf+=centered[t]*centered[t-k];
+    acf/=(varR*(n-k));
+    q+=acf*acf/(n-k);
+  }
+  q*=n*(n+2);
+  // Approximate p-value from chi-square
+  const pval=Math.exp(-q/(2*maxLag));
+  return {stat:q,pvalue:pval,isWhite:pval>0.05};
+}
+
+function computePredictionBands(coeffs, tPred, residuals, params){
+  // Estimate residual std from fitting window residuals
+  const residStd=Math.sqrt(residuals.reduce((s,r)=>s+r*Math.abs(r),0)/Math.max(residuals.length,1));
+  const bands=[];
+  for(const ti of tPred){
+    const pred=polyval(coeffs,ti);
+    const holdTime=ti-tPred[0];
+    // Uncertainty grows with extrapolation distance
+    const extraFactor=1+0.15*holdTime;
+    bands.push({
+      t:ti,
+      pred,
+      upper1:pred+residStd*extraFactor,
+      lower1:pred-residStd*extraFactor,
+      upper2:pred+2*residStd*extraFactor,
+      lower2:pred-2*residStd*extraFactor,
+    });
+  }
+  return bands;
+}
+
+// ═══════════════════════════════════
+// Animation
+// ═══════════════════════════════════
+let animPlaying=false,animTimer=null,animMaxSteps=0;
+
+function togglePlay(){
+  if(animPlaying){stopPlay();return;}
+  if(!window._result)return;
+  animPlaying=true;
+  document.getElementById('btnPlay').textContent='⏸ 暂停';
+  document.getElementById('btnPlay').classList.add('btn-orange');
+  document.getElementById('btnPlay').classList.remove('btn-green');
+  const slider=document.getElementById('animStep');
+  animMaxSteps=window._result.residuals.length-1;
+  slider.max=animMaxSteps;
+  animStepForward();
+}
+
+function stopPlay(){
+  animPlaying=false;
+  clearTimeout(animTimer);
+  document.getElementById('btnPlay').textContent='▶ 播放';
+  document.getElementById('btnPlay').classList.add('btn-green');
+  document.getElementById('btnPlay').classList.remove('btn-orange');
+}
+
+function animStepForward(){
+  if(!animPlaying)return;
+  const slider=document.getElementById('animStep');
+  let step=parseInt(slider.value);
+  if(step>=animMaxSteps){stopPlay();return;}
+  step++;
+  slider.value=step;
+  onAnimStep();
+  animTimer=setTimeout(animStepForward,400);
+}
+
+function animReset(){
+  stopPlay();
+  document.getElementById('animStep').value=0;
+  onAnimStep();
+}
+
+function onAnimStep(){
+  const step=parseInt(document.getElementById('animStep').value);
+  document.getElementById('animStepVal').textContent=step;
+  if(!window._result)return;
+  updateStatusAtStep(step);
+}
+
+function updateStatusAtStep(step){
+  const data=window._data;const result=window._result;const params=window._params;
+  if(!data||!result)return;
+  const {noisy}=data;
+  const {residuals,smoothedResiduals,thresholds,confidences,zones,predStart}=result;
+  if(residuals.length===0||step>=residuals.length)return;
+
+  const currentPrice=noisy[predStart+step].toFixed(3);
+  const predPrice=polyval(result.coeffs,data.t[predStart+step]).toFixed(3);
+  const resid=residuals[step].resid.toFixed(3);
+  const emaResid=smoothedResiduals[step].resid.toFixed(3);
+  const alpha=confidences[step].alpha;
+  const sigmaT=thresholds[step].val.toFixed(3);
+  const zone=zones[step];
+
+  document.getElementById('stCurrentPrice').textContent=currentPrice;
+  document.getElementById('stPredPrice').textContent=predPrice;
+  document.getElementById('stResidual').textContent=resid+' (EMA:'+emaResid+')';
+  document.getElementById('stResidual').style.color=Math.abs(parseFloat(resid))>parseFloat(sigmaT)*3?'#ef5350':'#ff9800';
+  document.getElementById('stConfidence').textContent=(alpha*100).toFixed(1)+'%';
+  document.getElementById('stConfidence').style.color=alpha>0.5?'#66bb6a':alpha>0.1?'#ffd54f':'#ef5350';
+  document.getElementById('stThreshold').textContent='±'+sigmaT;
+  document.getElementById('stThreshold').style.color=step>2*params.tau?'#ef5350':'#ffd54f';
+
+  const zoneEl=document.getElementById('stZone');
+  zoneEl.textContent=zone===1?'Zone1 三次有效':zone===2?'Zone2 二次退化':'Zone3 一次/失效';
+  zoneEl.className='zone-indicator '+(zone===1?'zone-1':zone===2?'zone-2':'zone-3');
+
+  // verdict at this step
+  const absEma=Math.abs(parseFloat(emaResid));
+  const absResid=Math.abs(parseFloat(resid));
+  const sT=parseFloat(sigmaT);
+  let verdict='',vColor='#78909c';
+  if(zone===3&&absEma>sT*2){verdict='Zone3+异常→强烈建议平仓！';vColor='#ef5350';}
+  else if(alpha<0.1){verdict='铁律三触发！α='+(alpha*100).toFixed(0)+'%<10%→一键止损';vColor='#ef5350';}
+  else if(absResid>3*sT&&absEma>3*sT){verdict='铁律五触发！拔网线→市价全出';vColor='#ef5350';}
+  else if(zone===2&&alpha<0.3){verdict='Zone2+低自信→保守退让';vColor='#ffd54f';}
+  else if(zone===1&&alpha>0.7){verdict='Zone1+高自信→满仓持有';vColor='#66bb6a';}
+  else if(zone===1){verdict='Zone1内→正常监控';vColor='#66bb6a';}
+  else{verdict='持仓中→持续监控';vColor='#ffd54f';}
+  const vel=document.getElementById('stVerdict');
+  vel.textContent=verdict;vel.style.color=vColor;
+  vel.style.background=vColor==='#66bb6a'?'#1b3a1b':vColor==='#ef5350'?'#3a1b1b':vColor==='#ffd54f'?'#3a3a1b':'#1a2a3a';
+}
+
+// ═══════════════════════════════════
+// URL persistence
+// ═══════════════════════════════════
+function saveParamsToURL(){
+  const params=p();
+  const hash=btoa(JSON.stringify(params));
+  window.location.hash=hash;
+}
+
+function loadParamsFromURL(){
+  try{
+    if(!window.location.hash)return false;
+    const params=JSON.parse(atob(window.location.hash.slice(1)));
+    if(params.noise!==undefined)document.getElementById('noiseLvl').value=params.noise;
+    if(params.degree)document.getElementById('fitDegree').value=params.degree;
+    if(params.fitWindow)document.getElementById('fitWindow').value=params.fitWindow;
+    if(params.extrapSteps)document.getElementById('extrapSteps').value=params.extrapSteps;
+    if(params.tau)document.getElementById('tauVal').value=params.tau;
+    if(params.sigma0)document.getElementById('sigma0Val').value=params.sigma0;
+    if(params.sigK)document.getElementById('sigmoidK').value=params.sigK;
+    if(params.sigB)document.getElementById('sigmoidB').value=params.sigB;
+    if(params.sigType)document.getElementById('sigType').value=params.sigType;
+    onSlider();
+    return true;
+  }catch(e){return false;}
 }
 
 // ═══════════════════════════════════
@@ -522,8 +787,15 @@ function resetAll(){
 // Init
 // ═══════════════════════════════════
 window.addEventListener('DOMContentLoaded',()=>{
+  const loaded=loadParamsFromURL();
   onSlider();
   setTimeout(runAnalysis,300);
+  // Save URL on param change
+  window.addEventListener('hashchange',()=>{});
+  const origRefit=refit;
+  refit=function(){origRefit();saveParamsToURL();};
+  const origRegen=regenerate;
+  regenerate=function(){origRegen();saveParamsToURL();};
 });
 </script>
 </body>
