@@ -234,14 +234,15 @@ function generateSignal(type, n, noise){
 // Core: fit + predict + residual
 // ═══════════════════════════════════
 function computeFit(noisy, t, params){
-  const i0=Math.floor(noisy.length*params.entryPos/100); // user-adjustable entry
-  const fitEnd=i0+params.fitWindow;
-  const tFit=t.slice(i0,fitEnd);
-  const yFit=noisy.slice(i0,fitEnd);
+  const i0=Math.floor(noisy.length*params.entryPos/100); // entry = 预测起点
+  const fitStart=Math.max(0,i0-params.fitWindow);        // 拟合数据在开仓前
+  const fitEnd=i0;                                        // 拟合结束于开仓位置
+  const tFit=t.slice(fitStart,fitEnd);
+  const yFit=noisy.slice(fitStart,fitEnd);
   const coeffs=polyfit(tFit,yFit,params.degree);
 
-  // prediction
-  const predStart=fitEnd;
+  // prediction starts AT entry position
+  const predStart=i0;
   const predEnd=Math.min(predStart+params.extrapSteps, noisy.length);
   const tPred=t.slice(predStart,predEnd);
   const yPred=tPred.map(ti=>polyval(coeffs,ti));
@@ -277,7 +278,7 @@ function computeFit(noisy, t, params){
     zones.push(z);
   }
 
-  return {coeffs, i0, fitEnd, tFit, yFit, tPred, yPred, residuals, smoothedResiduals, thresholds, confidences, zones, predStart, predEnd, lam};
+  return {coeffs, i0, fitStart, fitEnd, tFit, yFit, tPred, yPred, residuals, smoothedResiduals, thresholds, confidences, zones, predStart, predEnd, lam};
 }
 
 // ═══════════════════════════════════
@@ -309,8 +310,8 @@ function plotAll(data, result, params){
   const a=coeffs[0],b=coeffs[1];
   const inflT=Math.abs(a)>1e-10?-b/(3*a):null;
 
-  // Full cubic curve across entire time range
-  const tFull=t.slice(i0,predEnd);
+  // Full cubic curve: from fitting start through prediction end
+  const tFull=t.slice(fitStart,predEnd);
   const yFull=tFull.map(ti=>polyval(coeffs,ti));
 
   // Chart 1: Price + Fit
@@ -359,8 +360,8 @@ function plotAll(data, result, params){
     legend:{font:{size:9},orientation:'h',y:1.15,x:0},
     shapes:shapes1,margin:{t:35,b:40,l:50,r:15},height:280,
     annotations:[
-      {x:t[predStart],y:Math.max(...noisy)+0.3,text:'← 开仓',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
-      {x:t[fitEnd],y:Math.max(...noisy)+0.3,text:'预测开始 →',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
+      {x:t[i0],y:Math.max(...noisy)+0.3,text:'← 开仓=预测起点',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
+      {x:t[fitStart],y:Math.max(...noisy)+0.3,text:'拟合区间 →',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
       ...anns,
     ],
   };
@@ -484,7 +485,7 @@ function updateStatus(data, result, params){
   }
 
   // Fit quality metrics
-  const fitMetrics=computeFitMetrics(data.noisy,data.t,result.coeffs,result.i0,result.fitEnd);
+  const fitMetrics=computeFitMetrics(data.noisy,data.t,result.coeffs,result.fitStart,result.fitEnd);
   document.getElementById('fitR2').textContent=(fitMetrics.r2*100).toFixed(1)+'%';
   document.getElementById('fitR2').style.color=fitMetrics.r2>0.8?'#66bb6a':fitMetrics.r2>0.5?'#ffd54f':'#ef5350';
   document.getElementById('fitRMSE').textContent=fitMetrics.rmse.toFixed(4);
