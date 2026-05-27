@@ -65,6 +65,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
         <option value="gbm">几何布朗运动</option>
         <option value="pwlinear">分段线性</option>
       </select></div>
+      <div class="ctrl"><label>数据点总数</label><div class="row"><input type="range" id="totalPoints" min="30" max="200" step="5" value="100" oninput="onSlider()"><span class="val" id="totalPtsVal">100</span></div></div>
+      <div class="ctrl"><label>开仓位置 %</label><div class="row"><input type="range" id="entryPos" min="20" max="80" step="1" value="40" oninput="onSlider()"><span class="val" id="entryPosVal">40%</span></div></div>
       <div class="ctrl"><label>噪声 σ</label><div class="row"><input type="range" id="noiseLvl" min="0" max="1" step="0.01" value="0.15" oninput="onSlider()"><span class="val" id="noiseVal">0.15</span></div></div>
       <div class="btn-row">
         <button class="btn-blue" onclick="regenerate()">🔄 重新生成</button>
@@ -163,6 +165,8 @@ let breakInjected = false;
 function p(){
   return {
     sigType: document.getElementById('sigType').value,
+    totalPoints: parseInt(document.getElementById('totalPoints').value),
+    entryPos: parseInt(document.getElementById('entryPos').value),
     noise: parseFloat(document.getElementById('noiseLvl').value),
     degree: parseInt(document.getElementById('fitDegree').value),
     fitWindow: parseInt(document.getElementById('fitWindow').value),
@@ -230,7 +234,7 @@ function generateSignal(type, n, noise){
 // Core: fit + predict + residual
 // ═══════════════════════════════════
 function computeFit(noisy, t, params){
-  const i0=Math.floor(noisy.length*0.4); // entry at 40%
+  const i0=Math.floor(noisy.length*params.entryPos/100); // user-adjustable entry
   const fitEnd=i0+params.fitWindow;
   const tFit=t.slice(i0,fitEnd);
   const yFit=noisy.slice(i0,fitEnd);
@@ -305,12 +309,18 @@ function plotAll(data, result, params){
   const a=coeffs[0],b=coeffs[1];
   const inflT=Math.abs(a)>1e-10?-b/(3*a):null;
 
+  // Full cubic curve across entire time range
+  const tFull=t.slice(i0,predEnd);
+  const yFull=tFull.map(ti=>polyval(coeffs,ti));
+
   // Chart 1: Price + Fit
   const traces1=[
     {x:t,y:clean,type:'scatter',mode:'lines',name:'真实信号',line:{color:'rgba(120,144,156,0.3)',width:1,dash:'dot'},hoverinfo:'skip'},
     {x:t,y:noisy,type:'scatter',mode:'lines',name:'观测价格',line:{color:plotColors.price,width:2.2}},
+    // Full cubic curve (continuous)
+    {x:tFull,y:yFull,type:'scatter',mode:'lines',name:`完整k=${params.degree}曲线`,line:{color:plotColors.pred,width:1.8},opacity:0.5},
     {x:tFit,y:yFit,type:'scatter',mode:'markers',name:'拟合窗口',marker:{color:plotColors.fit,size:5,symbol:'circle-open'}},
-    {x:tPred,y:yPred,type:'scatter',mode:'lines',name:`k=${params.degree} 预测轨迹`,line:{color:plotColors.pred,width:2.8,dash:'dash'}},
+    {x:tPred,y:yPred,type:'scatter',mode:'lines',name:`预测段(外推)`,line:{color:plotColors.pred,width:2.8,dash:'dash'}},
     // confidence bands
     {x:[...bandT,...bandT.reverse()],y:[...bandU1,...bandL1.reverse()],type:'scatter',mode:'lines',fill:'toself',
       fillcolor:'rgba(255,152,0,0.08)',line:{width:0},name:'±1σ 预测带',hoverinfo:'skip'},
@@ -693,6 +703,8 @@ function loadParamsFromURL(){
   try{
     if(!window.location.hash)return false;
     const params=JSON.parse(atob(window.location.hash.slice(1)));
+    if(params.totalPoints)document.getElementById('totalPoints').value=params.totalPoints;
+    if(params.entryPos)document.getElementById('entryPos').value=params.entryPos;
     if(params.noise!==undefined)document.getElementById('noiseLvl').value=params.noise;
     if(params.degree)document.getElementById('fitDegree').value=params.degree;
     if(params.fitWindow)document.getElementById('fitWindow').value=params.fitWindow;
@@ -712,7 +724,7 @@ function loadParamsFromURL(){
 // ═══════════════════════════════════
 function runAnalysis(){
   const params=p();
-  const n=100;
+  const n=params.totalPoints;
   const data=generateSignal(params.sigType,n,params.noise);
   const result=computeFit(data.noisy,data.t,params);
   plotAll(data,result,params);
@@ -757,6 +769,8 @@ function injectSpike(){
 
 function onSlider(){
   const params=p();
+  document.getElementById('totalPtsVal').textContent=params.totalPoints;
+  document.getElementById('entryPosVal').textContent=params.entryPos+'%';
   document.getElementById('noiseVal').textContent=params.noise.toFixed(2);
   document.getElementById('fitWinVal').textContent=params.fitWindow;
   document.getElementById('extrapVal').textContent=params.extrapSteps;
@@ -770,6 +784,8 @@ function onSlider(){
 }
 
 function resetAll(){
+  document.getElementById('totalPoints').value=100;
+  document.getElementById('entryPos').value=40;
   document.getElementById('noiseLvl').value=0.15;
   document.getElementById('fitDegree').value='3';
   document.getElementById('fitWindow').value=20;
