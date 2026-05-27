@@ -98,8 +98,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
         <button class="btn-grey" onclick="resetAll()">↺ 重置默认</button>
       </div>
       <div style="font-size:.65em;color:#78909c;margin-top:4px;line-height:1.6">
-        图上<span style="color:#ce93d8">●紫色点</span>=波峰 <span style="color:#80cbc4">●青色点</span>=波谷<br>
-        拖动拟合起点/终点对齐多个波峰波谷
+        图上<span style="color:#ce93d8">▼紫色</span>=波峰 <span style="color:#80cbc4">▲青色</span>=波谷<br>
+        检测: P[i-1]&lt;P[i]&gt;P[i+1]→峰, P[i-1]&gt;P[i]&lt;P[i+1]→谷<br>
+        拖动拟合起点/终点使其跨越多个完整波动
       </div>
     </div>
 
@@ -111,6 +112,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       <div class="btn-row">
         <button class="btn-blue" onclick="refit()">📐 重新拟合</button>
         <button class="btn-grey" onclick="resetAll()">↺ 重置默认</button>
+      </div>
+    </div>
+
+    <div class="panel"><h3>拟合系数 P(t)=a·t³+b·t²+c·t+d</h3>
+      <div style="font-size:.7em;line-height:1.7">
+        <div>a = <span id="coefA" style="color:#ef5350;font-weight:bold">--</span> <span style="color:#78909c">(jerk·½, 拐点信号)</span></div>
+        <div>b = <span id="coefB" style="color:#ff9800;font-weight:bold">--</span> <span style="color:#78909c">(½·加速度A, 动量变化)</span></div>
+        <div>c = <span id="coefC" style="color:#ffd54f;font-weight:bold">--</span> <span style="color:#78909c">(速度V, 趋势方向)</span></div>
+        <div>d = <span id="coefD" style="color:#64b5f6;font-weight:bold">--</span> <span style="color:#78909c">(价格P₀, 盈亏基准)</span></div>
+        <div style="margin-top:3px;border-top:1px solid #2a4a6a;padding-top:3px">
+          开仓处: <span style="color:#ffd54f">V=</span><span id="entryV" style="color:#ffd54f;font-weight:bold">--</span>
+          <span style="color:#ff9800">A=</span><span id="entryA" style="color:#ff9800;font-weight:bold">--</span>
+        </div>
+        <div style="font-size:.9em;color:#78909c;margin-top:2px">P'(t)=3at²+2bt+c, P''(t)=6at+2b</div>
       </div>
     </div>
 
@@ -505,15 +520,34 @@ function updateStatus(data, result, params){
     vColor='#ffd54f';
   }
 
+  // Polynomial coefficients display
+  const [ca,cb,cc,cd]=result.coeffs;
+  document.getElementById('coefA').textContent=ca.toFixed(6);
+  document.getElementById('coefB').textContent=cb.toFixed(4);
+  document.getElementById('coefC').textContent=cc.toFixed(4);
+  document.getElementById('coefD').textContent=cd.toFixed(2);
+  // V and A at entry point (t = predStart time)
+  const entryT=data.t[result.predStart];
+  const entryV=3*ca*entryT*entryT+2*cb*entryT+cc;  // P'(t)
+  const entryA=6*ca*entryT+2*cb;                      // P''(t)
+  document.getElementById('entryV').textContent=entryV.toFixed(4);
+  document.getElementById('entryV').style.color=entryV>0?'#66bb6a':'#ef5350';
+  document.getElementById('entryA').textContent=entryA.toFixed(4);
+  document.getElementById('entryA').style.color=entryA<0?'#66bb6a':'#ef5350';
+  // Strategy hint
+  const vSign=entryV>0?'↑上涨':'↓下跌';const aSign=entryA<0?'减速':'加速';
+  document.getElementById('entryV').title=`价格${vSign}中`;
+  document.getElementById('entryA').title=`${aSign}中`;
+
   // Fit quality metrics
   const fitMetrics=computeFitMetrics(data.noisy,data.t,result.coeffs,result.fitStart,result.fitEnd);
   document.getElementById('fitR2').textContent=(fitMetrics.r2*100).toFixed(1)+'%';
   document.getElementById('fitR2').style.color=fitMetrics.r2>0.8?'#66bb6a':fitMetrics.r2>0.5?'#ffd54f':'#ef5350';
   document.getElementById('fitRMSE').textContent=fitMetrics.rmse.toFixed(4);
   // Inflection point
-  const ca=result.coeffs[0],cb=result.coeffs[1];
-  if(Math.abs(ca)>1e-10){
-    const inflT=-cb/(3*ca);
+  const cca=result.coeffs[0],ccb=result.coeffs[1];
+  if(Math.abs(cca)>1e-10){
+    const inflT=-ccb/(3*cca);
     document.getElementById('fitInflection').textContent=inflT.toFixed(3);
   }else{
     document.getElementById('fitInflection').textContent='N/A (a≈0)';
