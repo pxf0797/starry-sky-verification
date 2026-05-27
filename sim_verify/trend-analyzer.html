@@ -94,6 +94,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       </div>
     </div>
 
+    <div class="panel"><h3>卡尔达诺判别式</h3>
+      <div style="font-size:.72em;line-height:1.8">
+        <div>p = <span id="discP" style="color:#64b5f6">--</span></div>
+        <div>q = <span id="discQ" style="color:#64b5f6">--</span></div>
+        <div>Δ = <span id="discDelta" style="color:#ff9800;font-weight:bold">--</span></div>
+        <div>类型: <span id="discType" style="font-weight:bold">--</span></div>
+        <div style="margin-top:4px;font-size:.9em;color:#90caf9" id="discAdvice">--</div>
+      </div>
+    </div>
+
     <div class="panel"><h3>实时状态</h3>
       <div class="status-grid">
         <div class="status-item"><div class="val" id="stCurrentPrice" style="color:#64b5f6">--</div><div class="lbl">当前价格</div></div>
@@ -408,6 +418,23 @@ function updateStatus(data, result, params){
   }else{
     verdict='🟡 持仓中。持续监控残差和自信度变化趋势。';
     vColor='#ffd54f';
+  }
+
+  // Update discriminant
+  if(result.coeffs&&result.coeffs.length===4){
+    const [a,b,c,d]=result.coeffs;
+    if(Math.abs(a)>1e-10){
+      const p=(3*a*c-b*b)/(3*a*a);
+      const q=(2*b*b*b-9*a*b*c+27*a*a*d)/(27*a*a*a);
+      const delta=(q/2)*(q/2)+(p/3)*(p/3)*(p/3);
+      document.getElementById('discP').textContent=p.toFixed(4);
+      document.getElementById('discQ').textContent=q.toFixed(4);
+      document.getElementById('discDelta').textContent=delta.toFixed(6);
+      const delEl=document.getElementById('discDelta');
+      if(delta>1e-10){delEl.style.color='#66bb6a';document.getElementById('discType').textContent='1个实根 (单调/弱非单调)';document.getElementById('discType').style.color='#66bb6a';document.getElementById('discAdvice').textContent='策略: 满仓持有——拟合曲线单调，趋势明确';}
+      else if(Math.abs(delta)<1e-10){delEl.style.color='#ffd54f';document.getElementById('discType').textContent='重根 (临界状态)';document.getElementById('discType').style.color='#ffd54f';document.getElementById('discAdvice').textContent='策略: 警惕平仓——临界拐点，随时可能反转';}
+      else{delEl.style.color='#ef5350';document.getElementById('discType').textContent='3个实根 (S形/多极值)';document.getElementById('discType').style.color='#ef5350';document.getElementById('discAdvice').textContent='策略: 保守退让——多候选出场点，决策不确定性高';}
+    }
   }
 
   const vel=document.getElementById('stVerdict');
