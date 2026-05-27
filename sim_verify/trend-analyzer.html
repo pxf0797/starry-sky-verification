@@ -67,7 +67,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       </select></div>
       <div class="ctrl"><label>数据点总数</label><div class="row"><input type="range" id="totalPoints" min="30" max="200" step="5" value="100" oninput="onSlider()"><span class="val" id="totalPtsVal">100</span></div></div>
       <div class="ctrl"><label>噪声 σ</label><div class="row"><input type="range" id="noiseLvl" min="0" max="1" step="0.01" value="0.15" oninput="onSlider()"><span class="val" id="noiseVal">0.15</span></div></div>
-      <div class="ctrl"><label>EMA 周期</label><div class="row"><input type="range" id="emaPeriod" min="2" max="30" step="1" value="9" oninput="onSlider()"><span class="val" id="emaPeriodVal">9</span></div></div>
+      <div class="ctrl"><label>ALMA 窗口 N</label><div class="row"><input type="range" id="almaWindow" min="3" max="40" step="1" value="9" oninput="onSlider()"><span class="val" id="almaWindowVal">9</span></div></div>
+      <div class="ctrl"><label>ALMA offset</label><div class="row"><input type="range" id="almaOffset" min="0" max="100" step="1" value="85" oninput="onSlider()"><span class="val" id="almaOffsetVal">0.85</span></div></div>
+      <div class="ctrl"><label>ALMA sigma</label><div class="row"><input type="range" id="almaSigma" min="1" max="20" step="0.5" value="6" oninput="onSlider()"><span class="val" id="almaSigmaVal">6.0</span></div></div>
+      <div style="font-size:.62em;color:#546e7a;margin-top:2px;line-height:1.5">
+        offset=0→居中 SMA-like | offset=1→右偏 近EMA<br>
+        sigma小→窄窗/灵敏 | sigma大→宽窗/平滑<br>
+        <b>≈EMA条件</b>: offset→1 + sigma大(高斯尾≈指数衰减)
+      </div>
       <div class="btn-row">
         <button class="btn-blue" onclick="regenerate()">🔄 重新生成</button>
         <button class="btn-orange" onclick="injectBreak()">⚡ 注入断点</button>
@@ -101,7 +108,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       <div style="font-size:.65em;color:#78909c;margin-top:4px;line-height:1.6">
         图上<span style="color:#ce93d8">▼</span>=波峰 <span style="color:#80cbc4">▲</span>=波谷<br>
         <b>原始检测</b>: P[i-1]&lt;P[i]&gt;P[i+1]→峰<br>
-        <b>EMA检测</b>: EMA斜率由正变负→峰(粗边标记)<br>
+        <b>ALMA检测</b>: ALMA斜率由正变负→峰(粗边标记)<br>
         拖动拟合起点/终点使其跨越≥3个极值点<br>
         极值拟合: 用3个极值+开仓点→预测下一极值★
       </div>
@@ -203,15 +210,36 @@ function p(){
     sigma0: parseFloat(document.getElementById('sigma0Val').value),
     sigK: parseFloat(document.getElementById('sigmoidK').value),
     sigB: parseFloat(document.getElementById('sigmoidB').value),
-    emaPeriod: parseInt(document.getElementById('emaPeriod').value),
+    almaWindow: parseInt(document.getElementById('almaWindow').value),
+    almaOffset: parseInt(document.getElementById('almaOffset').value)/100,
+    almaSigma: parseFloat(document.getElementById('almaSigma').value),
   };
 }
 
-function computeEMA(data, period){
-  const alpha=2/(period+1);
-  const ema=[data[0]];
-  for(let i=1;i<data.length;i++)ema.push(alpha*data[i]+(1-alpha)*ema[i-1]);
-  return ema;
+function computeALMA(data, window, offset, sigma){
+  // ALMA: Arnaud Legoux Moving Average
+  // weight[j] = exp(-(j - m*offset)² / (2*(m/sigma)²))
+  // where m = (window-1)/2, j = 0..window-1
+  const m=(window-1)/2;
+  const s=window/sigma;
+  // precompute weights
+  const weights=[];
+  let wSum=0;
+  for(let j=0;j<window;j++){
+    const w=Math.exp(-((j-m*offset*2) **2)/(2*s*s));
+    weights.push(w);wSum+=w;
+  }
+  // normalize
+  for(let j=0;j<window;j++)weights[j]/=wSum;
+
+  const result=[];
+  for(let i=0;i<data.length;i++){
+    if(i<window-1){result.push(data[i]);continue;}
+    let sum=0;
+    for(let j=0;j<window;j++)sum+=weights[j]*data[i-window+1+j];
+    result.push(sum);
+  }
+  return result;
 }
 
 // ═══════════════════════════════════
@@ -381,22 +409,22 @@ function plotAll(data, result, params){
   const a=coeffs[0],b=coeffs[1];
   const inflT=Math.abs(a)>1e-10?-b/(3*a):null;
 
-  // EMA curve
-  const ema=computeEMA(noisy,params.emaPeriod||9);
-  const emaSlope=ema.map((v,i)=>i>0?v-ema[i-1]:0);
+  // ALMA curve
+  const alma=computeALMA(noisy,params.almaWindow||9,params.almaOffset||0.85,params.almaSigma||6);
+  const almaSlope=alma.map((v,i)=>i>0?v-alma[i-1]:0);
 
-  // Peak/trough detection: raw price + EMA slope zero-crossing
+  // Peak/trough detection: raw price + ALMA slope zero-crossing
   const peaks=[],troughs=[];
-  const emaPeaks=[],emaTroughs=[];
+  const almaPeaks=[],almaTroughs=[];
   for(let i=1;i<noisy.length-1;i++){
     if(noisy[i]>noisy[i-1]&&noisy[i]>noisy[i+1])peaks.push({t:t[i],y:noisy[i]});
     if(noisy[i]<noisy[i-1]&&noisy[i]<noisy[i+1])troughs.push({t:t[i],y:noisy[i]});
-    // EMA slope zero-crossing → turning point
-    if(i>=2&&emaSlope[i-1]>0&&emaSlope[i]<=0)emaPeaks.push({t:t[i],y:ema[i]});
-    if(i>=2&&emaSlope[i-1]<0&&emaSlope[i]>=0)emaTroughs.push({t:t[i],y:ema[i]});
+    // ALMA slope zero-crossing → turning point
+    if(i>=2&&almaSlope[i-1]>0&&almaSlope[i]<=0)almaPeaks.push({t:t[i],y:alma[i]});
+    if(i>=2&&almaSlope[i-1]<0&&almaSlope[i]>=0)almaTroughs.push({t:t[i],y:alma[i]});
   }
 
-  // All extrema (both raw and EMA) for cubic fit
+  // All extrema (both raw and ALMA) for cubic fit
   const allExtrema=[...peaks,...troughs].sort((a,b)=>a.t-b.t);
 
   // Extrema-based cubic: use 3 extrema in fitting window + entry point
@@ -412,7 +440,9 @@ function plotAll(data, result, params){
   const traces1=[
     {x:t,y:clean,type:'scatter',mode:'lines',name:'真实信号',line:{color:'rgba(120,144,156,0.3)',width:1,dash:'dot'},hoverinfo:'skip'},
     {x:t,y:noisy,type:'scatter',mode:'lines',name:'观测价格',line:{color:plotColors.price,width:2.2}},
-    {x:t,y:ema,type:'scatter',mode:'lines',name:`EMA(${params.emaPeriod||9})`,line:{color:'#ce93d8',width:1.8}},
+    {x:t,y:alma,type:'scatter',mode:'lines',
+      name:`ALMA(${params.almaWindow||9},${(params.almaOffset||0.85).toFixed(2)},${(params.almaSigma||6).toFixed(1)})`,
+      line:{color:'#ce93d8',width:1.8}},
     // Full cubic curve (continuous)
     {x:tFull,y:yFull,type:'scatter',mode:'lines',name:`完整k=${params.degree}曲线`,line:{color:plotColors.pred,width:1.8},opacity:0.5},
     {x:tFit,y:yFit,type:'scatter',mode:'markers',name:'拟合窗口',marker:{color:plotColors.fit,size:5,symbol:'circle-open'}},
@@ -436,13 +466,13 @@ function plotAll(data, result, params){
       marker:{size:14,color:'#ce93d8',symbol:'star'},
       text:[`预测${nextExtremum.type==='peak'?'峰':'谷'} t=${nextExtremum.t.toFixed(2)}`],
       textposition:'top center',textfont:{color:'#ce93d8',size:10}}]:[]),
-    // EMA-based peaks/troughs
-    {x:emaPeaks.map(p=>p.t),y:emaPeaks.map(p=>p.y),type:'scatter',mode:'markers',
+    // ALMA-based peaks/troughs
+    {x:almaPeaks.map(p=>p.t),y:almaPeaks.map(p=>p.y),type:'scatter',mode:'markers',
       marker:{size:8,color:'#ce93d8',symbol:'triangle-down',line:{width:1,color:'#fff'}},
-      name:'EMA波峰(斜率过零)',hoverinfo:'skip'},
-    {x:emaTroughs.map(p=>p.t),y:emaTroughs.map(p=>p.y),type:'scatter',mode:'markers',
+      name:'ALMA波峰(斜率过零)',hoverinfo:'skip'},
+    {x:almaTroughs.map(p=>p.t),y:almaTroughs.map(p=>p.y),type:'scatter',mode:'markers',
       marker:{size:8,color:'#80cbc4',symbol:'triangle-up',line:{width:1,color:'#fff'}},
-      name:'EMA波谷(斜率过零)',hoverinfo:'skip'},
+      name:'ALMA波谷(斜率过零)',hoverinfo:'skip'},
     // raw peaks & troughs
     {x:peaks.map(p=>p.t),y:peaks.map(p=>p.y),type:'scatter',mode:'markers',
       marker:{size:5,color:'rgba(206,147,216,0.4)',symbol:'triangle-down'},
@@ -871,7 +901,9 @@ function loadParamsFromURL(){
     if(params.sigma0)document.getElementById('sigma0Val').value=params.sigma0;
     if(params.sigK)document.getElementById('sigmoidK').value=params.sigK;
     if(params.sigB)document.getElementById('sigmoidB').value=params.sigB;
-    if(params.emaPeriod)document.getElementById('emaPeriod').value=params.emaPeriod;
+    if(params.almaWindow)document.getElementById('almaWindow').value=params.almaWindow;
+    if(params.almaOffset)document.getElementById('almaOffset').value=Math.round(params.almaOffset*100);
+    if(params.almaSigma)document.getElementById('almaSigma').value=params.almaSigma;
     if(params.sigType)document.getElementById('sigType').value=params.sigType;
     onSlider();
     return true;
@@ -940,7 +972,9 @@ function onSlider(){
   document.getElementById('sigma0Disp').textContent=params.sigma0.toFixed(2);
   document.getElementById('sigmoidKDisp').textContent=params.sigK.toFixed(1);
   document.getElementById('sigmoidBDisp').textContent=params.sigB.toFixed(2);
-  document.getElementById('emaPeriodVal').textContent=params.emaPeriod;
+  document.getElementById('almaWindowVal').textContent=params.almaWindow;
+  document.getElementById('almaOffsetVal').textContent=(params.almaOffset).toFixed(2);
+  document.getElementById('almaSigmaVal').textContent=params.almaSigma.toFixed(1);
   // Debounced refit
   clearTimeout(window._sliderTimer);
   window._sliderTimer=setTimeout(refit,200);
@@ -957,7 +991,9 @@ function resetAll(){
   document.getElementById('sigma0Val').value=0.5;
   document.getElementById('sigmoidK').value=2.0;
   document.getElementById('sigmoidB').value=-0.74;
-  document.getElementById('emaPeriod').value=9;
+  document.getElementById('almaWindow').value=9;
+  document.getElementById('almaOffset').value=85;
+  document.getElementById('almaSigma').value=6;
   document.getElementById('sigType').value='cubic';
   onSlider();
   regenerate();
