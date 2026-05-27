@@ -16,7 +16,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
 .chart-panel{background:#1a2a3a;border-radius:8px;border:1px solid #2a4a6a;position:relative}
 .chart-panel .ctitle{position:absolute;top:6px;left:14px;font-size:.75em;color:#64b5f6;z-index:10;font-weight:600}
 .chart-box{width:100%;height:100%}
-#chartMain{flex:3}#chartResidual{flex:2}#chartConfidence{flex:1.5}
+#chartMain{flex:3}#chartResidual{flex:1.5}#chartVelocity{flex:1.5}#chartConfidence{flex:1.5}
 .sidebar{width:320px;background:#1a2a3a;border-left:2px solid #2a4a6a;display:flex;flex-direction:column;overflow-y:auto;padding:12px;gap:10px}
 .panel{background:#0f1923;border-radius:8px;padding:12px;border:1px solid #2a4a6a}
 .panel h3{font-size:.8em;color:#64b5f6;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #1e3044}
@@ -53,6 +53,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
     <div class="charts">
       <div class="chart-panel" id="chartMain"><div class="ctitle">价格轨迹 & 三次拟合预测</div><div class="chart-box" id="plotMain"></div></div>
       <div class="chart-panel" id="chartResidual"><div class="ctitle">残差 Δ(t) = P_actual − P_pred & 动态阈值 σ(t)</div><div class="chart-box" id="plotResidual"></div></div>
+      <div class="chart-panel" id="chartVelocity"><div class="ctitle">速度 V(t)=P'(t) & 加速度 A(t)=P''(t)</div><div class="chart-box" id="plotVelocity"></div></div>
       <div class="chart-panel" id="chartConfidence"><div class="ctitle">SIGMOID 自信度 α(Δ) & 半衰期衰减</div><div class="chart-box" id="plotConfidence"></div></div>
     </div>
   </div>
@@ -551,6 +552,44 @@ function plotAll(data, result, params){
   };
 
   Plotly.react('plotResidual',traces2,layout2);
+
+  // Chart 2.5: Velocity V(t) & Acceleration A(t)
+  const tVA=tFull; // full range from fit start to pred end
+  const vCurve=tVA.map(ti=>3*coeffs[0]*ti*ti+2*coeffs[1]*ti+coeffs[2]);
+  const aCurve=tVA.map(ti=>6*coeffs[0]*ti+2*coeffs[1]);
+
+  // V=0 crossings (price extrema)
+  const vZeroMarks=[];for(let i=1;i<vCurve.length;i++){if(vCurve[i-1]*vCurve[i]<=0)vZeroMarks.push({t:tVA[i],v:vCurve[i],a:aCurve[i]});}
+  // A=0 crossings (price inflection)
+  const aZeroMarks=[];for(let i=1;i<aCurve.length;i++){if(aCurve[i-1]*aCurve[i]<=0)aZeroMarks.push({t:tVA[i],a:aCurve[i]});}
+
+  const tracesVA=[
+    {x:tVA,y:vCurve,type:'scatter',mode:'lines',name:'V(t)=P\'(t) 速度',line:{color:'#ffd54f',width:2.2},yaxis:'y'},
+    {x:tVA,y:aCurve,type:'scatter',mode:'lines',name:'A(t)=P\'\'(t) 加速度',line:{color:'#ff9800',width:2.2},yaxis:'y2'},
+    {x:[tVA[0],tVA[tVA.length-1]],y:[0,0],type:'scatter',mode:'lines',line:{color:'rgba(255,255,255,0.15)',width:1},name:'零线',hoverinfo:'skip',yaxis:'y'},
+    // V=0 markers
+    {x:vZeroMarks.map(p=>p.t),y:vZeroMarks.map(p=>p.v),type:'scatter',mode:'markers',
+      marker:{size:8,color:'#ffd54f',symbol:'circle',line:{width:1.5,color:'#fff'}},
+      name:'V=0 (价格极值)',hoverinfo:'text',text:vZeroMarks.map(p=>`V=0→价格极值 A=${p.a.toFixed(2)}`),yaxis:'y'},
+    // A=0 markers
+    {x:aZeroMarks.map(p=>p.t),y:aZeroMarks.map(()=>0),type:'scatter',mode:'markers',
+      marker:{size:9,color:'#ff9800',symbol:'diamond',line:{width:1.5,color:'#fff'}},
+      name:'A=0 (拐点)',hoverinfo:'text',text:aZeroMarks.map(()=>'A=0→拐点'),yaxis:'y'},
+    // Entry line
+    {x:[t[i0],t[i0]],y:[Math.min(...vCurve.concat(aCurve))-0.5,Math.max(...vCurve.concat(aCurve))+0.5],
+      type:'scatter',mode:'lines',line:{color:'rgba(255,255,255,0.2)',width:1,dash:'dot'},name:'开仓',hoverinfo:'skip'},
+  ];
+
+  const layoutVA={
+    paper_bgcolor:plotBg,plot_bgcolor:plotBg,font:{color:fontC,size:10},
+    xaxis:{title:'时间',gridcolor:gridC},
+    yaxis:{title:'V(t) 速度',gridcolor:gridC,titlefont:{color:'#ffd54f'}},
+    yaxis2:{title:'A(t) 加速度',overlaying:'y',side:'right',gridcolor:'transparent',titlefont:{color:'#ff9800'}},
+    legend:{font:{size:8},orientation:'h',y:1.2,x:0},
+    margin:{t:35,b:40,l:50,r:50},height:180,
+  };
+
+  Plotly.react('plotVelocity',tracesVA,layoutVA);
 
   // Chart 3: Confidence + Decay
   const confT=confidences.map(r=>r.t);
