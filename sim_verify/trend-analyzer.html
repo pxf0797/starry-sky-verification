@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星空策略 — 趋势·三次方程·残差 实时分析器</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-serif;background:#0f1923;color:#e0e0e0;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.header{background:linear-gradient(135deg,#1a2a3a,#0f1923);padding:10px 20px;border-bottom:2px solid #2a4a6a;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:1.2em;color:#64b5f6}.header .sub{font-size:.7em;color:#78909c}
+.main{display:flex;flex:1;overflow:hidden}
+.left{flex:1;display:flex;flex-direction:column;min-width:0}
+.charts{flex:1;display:flex;flex-direction:column;gap:4px;padding:8px}
+.chart-panel{background:#1a2a3a;border-radius:8px;border:1px solid #2a4a6a;position:relative}
+.chart-panel .ctitle{position:absolute;top:6px;left:14px;font-size:.75em;color:#64b5f6;z-index:10;font-weight:600}
+.chart-box{width:100%;height:100%}
+#chartMain{flex:3}#chartResidual{flex:2}#chartConfidence{flex:1.5}
+.sidebar{width:320px;background:#1a2a3a;border-left:2px solid #2a4a6a;display:flex;flex-direction:column;overflow-y:auto;padding:12px;gap:10px}
+.panel{background:#0f1923;border-radius:8px;padding:12px;border:1px solid #2a4a6a}
+.panel h3{font-size:.8em;color:#64b5f6;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #1e3044}
+.ctrl{margin-bottom:8px}.ctrl label{font-size:.7em;color:#90caf9;display:block;margin-bottom:2px}
+.ctrl .row{display:flex;align-items:center;gap:8px}
+.ctrl input[type=range]{flex:1;accent-color:#42a5f5;height:4px}
+.ctrl .val{font-size:.7em;color:#64b5f6;min-width:42px;text-align:right;font-weight:bold}
+.ctrl select{width:100%;background:#1a3a5a;color:#e0e0e0;border:1px solid #2a4a6a;padding:4px 8px;border-radius:4px;font-size:.75em}
+.btn-row{display:flex;gap:6px;flex-wrap:wrap}
+.btn-row button{flex:1;min-width:60px;padding:7px 10px;border:none;border-radius:6px;cursor:pointer;font-size:.72em;font-weight:600;transition:all .15s}
+.btn-blue{background:#42a5f5;color:#fff}.btn-blue:hover{background:#64b5f6}
+.btn-red{background:#ef5350;color:#fff}.btn-red:hover{background:#f44336}
+.btn-green{background:#66bb6a;color:#fff}.btn-green:hover{background:#81c784}
+.btn-grey{background:#546e7a;color:#fff}.btn-grey:hover{background:#78909c}
+.btn-orange{background:#ff9800;color:#fff}.btn-orange:hover{background:#ffa726}
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.status-item{background:#1a2a3a;padding:8px;border-radius:6px;text-align:center}
+.status-item .val{font-size:1.1em;font-weight:bold}.status-item .lbl{font-size:.65em;color:#78909c;margin-top:2px}
+.zone-indicator{font-size:.85em;font-weight:bold;padding:3px 8px;border-radius:4px;text-align:center}
+.zone-1{color:#66bb6a;background:#1b3a1b}.zone-2{color:#ffd54f;background:#3a3a1b}.zone-3{color:#ef5350;background:#3a1b1b}
+.verdict-mini{font-size:.68em;padding:6px 8px;border-radius:4px;margin-top:4px;line-height:1.5}
+@media(max-width:900px){.main{flex-direction:column}.sidebar{width:100%;max-height:40vh}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div><h1>星空策略 · 趋势&三次方程&残差 实时分析器</h1><span class="sub">Price → Cubic Fit → Residual → SIGMOID → Decision</span></div>
+  <span style="font-size:.7em;color:#546e7a">拖动滑块实时调节 | 点击按钮注入事件</span>
+</div>
+
+<div class="main">
+  <div class="left">
+    <div class="charts">
+      <div class="chart-panel" id="chartMain"><div class="ctitle">价格轨迹 & 三次拟合预测</div><div class="chart-box" id="plotMain"></div></div>
+      <div class="chart-panel" id="chartResidual"><div class="ctitle">残差 Δ(t) = P_actual − P_pred & 动态阈值 σ(t)</div><div class="chart-box" id="plotResidual"></div></div>
+      <div class="chart-panel" id="chartConfidence"><div class="ctitle">SIGMOID 自信度 α(Δ) & 半衰期衰减</div><div class="chart-box" id="plotConfidence"></div></div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="panel"><h3>信号控制</h3>
+      <div class="ctrl"><label>信号类型</label><select id="sigType" onchange="regenerate()">
+        <option value="cubic">三次多项式 + 拐点</option>
+        <option value="sine">正弦衰减</option>
+        <option value="gbm">几何布朗运动</option>
+        <option value="pwlinear">分段线性</option>
+      </select></div>
+      <div class="ctrl"><label>噪声 σ</label><div class="row"><input type="range" id="noiseLvl" min="0" max="1" step="0.01" value="0.15" oninput="onSlider()"><span class="val" id="noiseVal">0.15</span></div></div>
+      <div class="btn-row">
+        <button class="btn-blue" onclick="regenerate()">🔄 重新生成</button>
+        <button class="btn-orange" onclick="injectBreak()">⚡ 注入断点</button>
+        <button class="btn-red" onclick="injectSpike()">📌 注入插针</button>
+      </div>
+    </div>
+
+    <div class="panel"><h3>拟合参数</h3>
+      <div class="ctrl"><label>多项式阶数 k</label><select id="fitDegree" onchange="refit()">
+        <option value="1">k=1 一次 (直线)</option><option value="2">k=2 二次 (抛物线)</option>
+        <option value="3" selected>k=3 三次 (S曲线) ★推荐</option>
+        <option value="4">k=4 四次</option><option value="5">k=5 五次</option>
+      </select></div>
+      <div class="ctrl"><label>拟合窗口 (数据点)</label><div class="row"><input type="range" id="fitWindow" min="8" max="40" step="1" value="20" oninput="onSlider()"><span class="val" id="fitWinVal">20</span></div></div>
+      <div class="ctrl"><label>外推预测 (数据点)</label><div class="row"><input type="range" id="extrapSteps" min="5" max="40" step="1" value="15" oninput="onSlider()"><span class="val" id="extrapVal">15</span></div></div>
+    </div>
+
+    <div class="panel"><h3>策略参数</h3>
+      <div class="ctrl"><label>半衰期 τ (预测有效期)</label><div class="row"><input type="range" id="tauVal" min="1" max="60" step="0.5" value="5" oninput="onSlider()"><span class="val" id="tauDisp">5.0 min</span></div></div>
+      <div class="ctrl"><label>初始阈值 σ₀ (容忍度)</label><div class="row"><input type="range" id="sigma0Val" min="0.05" max="2.0" step="0.05" value="0.5" oninput="onSlider()"><span class="val" id="sigma0Disp">0.50</span></div></div>
+      <div class="ctrl"><label>SIGMOID 灵敏度 k</label><div class="row"><input type="range" id="sigmoidK" min="0.5" max="8" step="0.1" value="2.0" oninput="onSlider()"><span class="val" id="sigmoidKDisp">2.0</span></div></div>
+      <div class="ctrl"><label>SIGMOID 偏置 b</label><div class="row"><input type="range" id="sigmoidB" min="-3" max="2" step="0.05" value="-0.74" oninput="onSlider()"><span class="val" id="sigmoidBDisp">-0.74</span></div></div>
+      <div class="btn-row">
+        <button class="btn-blue" onclick="refit()">📐 重新拟合</button>
+        <button class="btn-grey" onclick="resetAll()">↺ 重置默认</button>
+      </div>
+    </div>
+
+    <div class="panel"><h3>实时状态</h3>
+      <div class="status-grid">
+        <div class="status-item"><div class="val" id="stCurrentPrice" style="color:#64b5f6">--</div><div class="lbl">当前价格</div></div>
+        <div class="status-item"><div class="val" id="stPredPrice" style="color:#ff9800">--</div><div class="lbl">预测价格</div></div>
+        <div class="status-item"><div class="val" id="stResidual" style="color:#ef5350">--</div><div class="lbl">残差 Δ</div></div>
+        <div class="status-item"><div class="val" id="stConfidence" style="color:#66bb6a">--</div><div class="lbl">自信度 α</div></div>
+        <div class="status-item"><div class="val" id="stThreshold" style="color:#ffd54f">--</div><div class="lbl">动态阈值 σ(t)</div></div>
+        <div class="status-item"><div class="val" id="stZone" style="font-size:.85em">--</div><div class="lbl">时间分区</div></div>
+      </div>
+      <div id="stVerdict" class="verdict-mini" style="background:#1a2a3a;color:#78909c">等待拟合...</div>
+    </div>
+
+    <div class="panel"><h3>操作提示</h3>
+      <div style="font-size:.68em;color:#78909c;line-height:1.8">
+        · 拖动任意滑块 → 实时更新图表<br>
+        · 改变信号类型 → 重新生成价格<br>
+        · 「注入断点」→ 模拟跳空行情<br>
+        · 「注入插针」→ 模拟瞬时极端波动<br>
+        · 观察残差如何触发铁律三/五<br>
+        · 调整 τ 看预测区间如何收缩<br>
+        · 对比 k=3 vs k=4/5 的过拟合
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<script>
+// ═══════════════════════════════════
+// State
+// ═══════════════════════════════════
+let priceData = [];
+let fitCoeffs = null;
+let entryIndex = 0;
+let currentStep = 0;
+let breakInjected = false;
+
+function p(){
+  return {
+    sigType: document.getElementById('sigType').value,
+    noise: parseFloat(document.getElementById('noiseLvl').value),
+    degree: parseInt(document.getElementById('fitDegree').value),
+    fitWindow: parseInt(document.getElementById('fitWindow').value),
+    extrapSteps: parseInt(document.getElementById('extrapSteps').value),
+    tau: parseFloat(document.getElementById('tauVal').value),
+    sigma0: parseFloat(document.getElementById('sigma0Val').value),
+    sigK: parseFloat(document.getElementById('sigmoidK').value),
+    sigB: parseFloat(document.getElementById('sigmoidB').value),
+  };
+}
+
+// ═══════════════════════════════════
+// Math utils
+// ═══════════════════════════════════
+function polyval(c,x){let y=0;for(let i=0;i<c.length;i++)y=y*x+c[i];return y;}
+function polyfit(x,y,deg){
+  const n=x.length,m=deg+1;
+  const A=Array.from({length:n},(_,i)=>Array.from({length:m},(_,j)=>Math.pow(x[i],j)));
+  const AT=Array.from({length:m},(_,j)=>Array.from({length:n},(_,i)=>A[i][j]));
+  const ATA=Array.from({length:m},(_,j)=>Array.from({length:m},(_,k)=>AT[j].reduce((s,v,i)=>s+v*A[i][k],0)));
+  const ATy=Array.from({length:m},(_,j)=>AT[j].reduce((s,v,i)=>s+v*y[i],0));
+  const aug=ATA.map((row,j)=>[...row,ATy[j]]);
+  for(let col=0;col<m;col++){
+    let pivot=col;for(let r=col+1;r<m;r++)if(Math.abs(aug[r][col])>Math.abs(aug[pivot][col]))pivot=r;
+    [aug[col],aug[pivot]]=[aug[pivot],aug[col]];
+    const piv=aug[col][col];if(Math.abs(piv)<1e-14)continue;
+    for(let c=col;c<=m;c++)aug[col][c]/=piv;
+    for(let r=0;r<m;r++){if(r===col)continue;const f=aug[r][col];for(let c=col;c<=m;c++)aug[r][c]-=f*aug[col][c];}
+  }
+  return aug.map(r=>r[m]).reverse();
+}
+function randn(){let u=0;while(u===0)u=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*Math.random());}
+
+// ═══════════════════════════════════
+// Signal generation
+// ═══════════════════════════════════
+function generateSignal(type, n, noise){
+  const t=Array.from({length:n},(_,i)=>i*0.08);
+  let clean;
+  switch(type){
+    case 'cubic':
+      clean=t.map(x=>x*x*x-1.5*x*x+0.5*x+100);
+      break;
+    case 'sine':
+      clean=t.map(x=>3*Math.sin(3.5*x)*Math.exp(-0.4*x)+100);
+      break;
+    case 'gbm':{
+      const W=[0];for(let i=1;i<n;i++)W.push(W[i-1]+randn()*Math.sqrt(t[1]-t[0]));
+      clean=t.map((x,i)=>100*Math.exp(0.2*x+0.35*W[i]));
+      break;}
+    case 'pwlinear':
+      clean=[];const br=[0,0.6,1.0,1.4,2.0,2.6,3.2];
+      const sl=[2.5,-2.0,0.8,-2.5,1.0,-0.5];let yv=100,seg=0;
+      for(let i=0;i<n;i++){const ti=t[i];
+        while(seg<sl.length&&ti>br[seg+1]){yv+=sl[seg]*(br[seg+1]-br[seg]);seg++;}
+        clean.push(yv+sl[Math.min(seg,sl.length-1)]*(ti-br[Math.min(seg,br.length-2)]));
+      }
+      break;
+  }
+  const noisy=clean.map(c=>c+randn()*noise);
+  return {t,clean,noisy};
+}
+
+// ═══════════════════════════════════
+// Core: fit + predict + residual
+// ═══════════════════════════════════
+function computeFit(noisy, t, params){
+  const i0=Math.floor(noisy.length*0.4); // entry at 40%
+  const fitEnd=i0+params.fitWindow;
+  const tFit=t.slice(i0,fitEnd);
+  const yFit=noisy.slice(i0,fitEnd);
+  const coeffs=polyfit(tFit,yFit,params.degree);
+
+  // prediction
+  const predStart=fitEnd;
+  const predEnd=Math.min(predStart+params.extrapSteps, noisy.length);
+  const tPred=t.slice(predStart,predEnd);
+  const yPred=tPred.map(ti=>polyval(coeffs,ti));
+
+  // residuals
+  const residuals=[];
+  const smoothedResiduals=[];
+  const thresholds=[];
+  const confidences=[];
+  const zones=[];
+  const lam=Math.log(2)/params.tau;
+  let emaResid=0;
+  const alphaEma=1-Math.pow(2,-1/params.tau);
+
+  for(let i=predStart;i<predEnd;i++){
+    const actual=noisy[i];
+    const pred=polyval(coeffs,t[i]);
+    const resid=actual-pred;
+    residuals.push({t:t[i],resid});
+
+    emaResid=alphaEma*resid+(1-alphaEma)*emaResid;
+    smoothedResiduals.push({t:t[i],resid:emaResid});
+
+    const holdTime=i-predStart;
+    const sigmaT=params.sigma0*Math.exp(-lam*holdTime);
+    thresholds.push({t:t[i],val:sigmaT,upper:3*sigmaT,lower:-3*sigmaT});
+
+    const arg=Math.max(Math.min(-params.sigK*Math.abs(emaResid)+params.sigB,50),-50);
+    const alpha=1/(1+Math.exp(-arg));
+    confidences.push({t:t[i],alpha});
+
+    const z=holdTime<params.tau?1:holdTime<2*params.tau?2:3;
+    zones.push(z);
+  }
+
+  return {coeffs, i0, fitEnd, tFit, yFit, tPred, yPred, residuals, smoothedResiduals, thresholds, confidences, zones, predStart, predEnd, lam};
+}
+
+// ═══════════════════════════════════
+// Plotting
+// ═══════════════════════════════════
+const plotColors={price:'#42a5f5',fit:'#66bb6a',pred:'#ff9800',resid:'#ef5350',
+  thresh:'#ffd54f',ema:'#ce93d8',conf:'#42a5f5',zone1:'rgba(102,187,106,0.06)',zone2:'rgba(255,213,79,0.06)',zone3:'rgba(239,83,80,0.08)'};
+const plotBg='#1a2a3a',gridC='#2a4a6a',fontC='#e0e0e0';
+
+function plotAll(data, result, params){
+  const {t,clean,noisy}=data;
+  const {coeffs,i0,fitEnd,tFit,yFit,tPred,yPred,residuals,smoothedResiduals,thresholds,confidences,zones,predStart,predEnd,lam}=result;
+
+  // Chart 1: Price + Fit
+  const traces1=[
+    {x:t,y:clean,type:'scatter',mode:'lines',name:'真实信号',line:{color:'rgba(120,144,156,0.3)',width:1,dash:'dot'},hoverinfo:'skip'},
+    {x:t,y:noisy,type:'scatter',mode:'lines',name:'观测价格',line:{color:plotColors.price,width:2.2}},
+    {x:tFit,y:yFit,type:'scatter',mode:'markers',name:'拟合窗口',marker:{color:plotColors.fit,size:5,symbol:'circle-open'}},
+    {x:tPred,y:yPred,type:'scatter',mode:'lines',name:`k=${params.degree} 预测轨迹`,line:{color:plotColors.pred,width:2.8,dash:'dash'}},
+    // entry line
+    {x:[t[i0],t[i0]],y:[Math.min(...noisy)-0.5,Math.max(...noisy)+0.5],type:'scatter',mode:'lines',
+      line:{color:'rgba(255,255,255,0.3)',width:1,dash:'dot'},name:'开仓点',hoverinfo:'skip'},
+  ];
+
+  // Zone shading
+  const zoneColors=['rgba(102,187,106,0.06)','rgba(255,213,79,0.06)','rgba(239,83,80,0.08)'];
+  const shapes1=[];
+  if(predStart<predEnd){
+    const z1End=t[Math.min(predStart+Math.floor(params.tau),predEnd-1)];
+    const z2End=t[Math.min(predStart+Math.floor(2*params.tau),predEnd-1)];
+    shapes1.push({type:'rect',x0:t[predStart],x1:z1End,y0:0,y1:1,yref:'paper',fillcolor:zoneColors[0],line:{width:0},name:'Zone1'});
+    shapes1.push({type:'rect',x0:z1End,x1:z2End,y0:0,y1:1,yref:'paper',fillcolor:zoneColors[1],line:{width:0},name:'Zone2'});
+    shapes1.push({type:'rect',x0:z2End,x1:t[predEnd-1],y0:0,y1:1,yref:'paper',fillcolor:zoneColors[2],line:{width:0},name:'Zone3'});
+  }
+
+  const layout1={
+    paper_bgcolor:plotBg,plot_bgcolor:plotBg,font:{color:fontC,size:10},
+    xaxis:{title:'时间',gridcolor:gridC,zeroline:false},
+    yaxis:{title:'价格',gridcolor:gridC},
+    legend:{font:{size:9},orientation:'h',y:1.15,x:0},
+    shapes:shapes1,margin:{t:35,b:40,l:50,r:15},height:280,
+    annotations:[
+      {x:t[predStart],y:Math.max(...noisy)+0.3,text:'← 开仓',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
+      {x:t[fitEnd],y:Math.max(...noisy)+0.3,text:'预测开始 →',showarrow:false,font:{size:9,color:'rgba(255,255,255,0.5)'}},
+    ],
+  };
+
+  Plotly.react('plotMain',traces1,layout1);
+
+  // Chart 2: Residuals
+  const resT=residuals.map(r=>r.t);
+  const resV=residuals.map(r=>r.resid);
+  const smT=smoothedResiduals.map(r=>r.t);
+  const smV=smoothedResiduals.map(r=>r.resid);
+  const thT=thresholds.map(r=>r.t);
+  const thU=thresholds.map(r=>r.upper);
+  const thL=thresholds.map(r=>r.lower);
+
+  const traces2=[
+    {x:resT,y:resV,type:'bar',name:'原始残差 Δ',marker:{color:'rgba(239,83,80,0.5)'},yaxis:'y'},
+    {x:smT,y:smV,type:'scatter',mode:'lines',name:'EMA平滑残差',line:{color:plotColors.ema,width:2.2},yaxis:'y'},
+    {x:thT,y:thU,type:'scatter',mode:'lines',name:'+3σ(t) 上界',line:{color:plotColors.thresh,width:1.5,dash:'dash'},yaxis:'y',hoverinfo:'skip'},
+    {x:thT,y:thL,type:'scatter',mode:'lines',name:'-3σ(t) 下界',line:{color:plotColors.thresh,width:1.5,dash:'dash'},yaxis:'y',hoverinfo:'skip'},
+    {x:thT,y:thU.map((_,i)=>0),type:'scatter',mode:'lines',name:'零线',line:{color:'rgba(255,255,255,0.2)',width:1},yaxis:'y',hoverinfo:'skip'},
+    // threshold fill
+    {x:[...thT,...thT.reverse()],y:[...thU,...thL.reverse()],type:'scatter',mode:'lines',fill:'toself',
+      fillcolor:'rgba(255,213,79,0.08)',line:{width:0},name:'容忍带',hoverinfo:'skip',yaxis:'y'},
+  ];
+
+  const layout2={
+    paper_bgcolor:plotBg,plot_bgcolor:plotBg,font:{color:fontC,size:10},
+    xaxis:{title:'时间',gridcolor:gridC},
+    yaxis:{title:'残差',gridcolor:gridC},
+    legend:{font:{size:8},orientation:'h',y:1.2,x:0},
+    margin:{t:35,b:40,l:50,r:15},height:220,
+  };
+
+  Plotly.react('plotResidual',traces2,layout2);
+
+  // Chart 3: Confidence + Decay
+  const confT=confidences.map(r=>r.t);
+  const confV=confidences.map(r=>r.alpha);
+  const holdT=confidences.map((_,i)=>i);
+  const decay=holdT.map(ht=>Math.exp(-lam*ht)); // coefficient decay
+  const sigmaDecay=holdT.map(ht=>params.sigma0*Math.exp(-lam*ht));
+
+  const traces3=[
+    {x:confT,y:confV,type:'scatter',mode:'lines',name:'自信度 α(Δ̃)',line:{color:plotColors.conf,width:2.8},
+      fill:'tozeroy',fillcolor:'rgba(66,165,245,0.1)'},
+    {x:confT,y:decay,type:'scatter',mode:'lines',name:'高次项衰减 e^(-λt)',line:{color:plotColors.pred,width:1.8,dash:'dash'},yaxis:'y'},
+    {x:confT,y:sigmaDecay.map(v=>v/params.sigma0),type:'scatter',mode:'lines',name:'阈值衰减 σ(t)/σ₀',line:{color:plotColors.thresh,width:1.8,dash:'dot'},yaxis:'y'},
+    // alpha min line
+    {x:[confT[0],confT[confT.length-1]],y:[0.1,0.1],type:'scatter',mode:'lines',line:{color:'rgba(239,83,80,0.4)',width:1,dash:'dot'},name:'α_min=0.1 (铁律三)',hoverinfo:'skip'},
+  ];
+
+  const layout3={
+    paper_bgcolor:plotBg,plot_bgcolor:plotBg,font:{color:fontC,size:10},
+    xaxis:{title:'持仓时间',gridcolor:gridC},
+    yaxis:{title:'α / 衰减系数',range:[0,1.05],gridcolor:gridC},
+    legend:{font:{size:8},orientation:'h',y:1.2,x:0},
+    margin:{t:35,b:40,l:50,r:15},height:200,
+  };
+
+  Plotly.react('plotConfidence',traces3,layout3);
+}
+
+// ═══════════════════════════════════
+// Status panel update
+// ═══════════════════════════════════
+function updateStatus(data, result, params){
+  const {noisy}=data;
+  const {residuals,smoothedResiduals,thresholds,confidences,zones,predStart,predEnd}=result;
+  if(residuals.length===0)return;
+
+  const lastIdx=residuals.length-1;
+  const currentPrice=noisy[predStart+lastIdx].toFixed(3);
+  const predPrice=polyval(result.coeffs,data.t[predStart+lastIdx]).toFixed(3);
+  const resid=residuals[lastIdx].resid.toFixed(3);
+  const emaResid=smoothedResiduals[lastIdx].resid.toFixed(3);
+  const alpha=confidences[lastIdx].alpha;
+  const sigmaT=thresholds[lastIdx].val.toFixed(3);
+  const zone=zones[lastIdx];
+  const holdSteps=lastIdx;
+
+  document.getElementById('stCurrentPrice').textContent=currentPrice;
+  document.getElementById('stPredPrice').textContent=predPrice;
+  document.getElementById('stResidual').textContent=resid+' (EMA:'+emaResid+')';
+  document.getElementById('stResidual').style.color=Math.abs(parseFloat(resid))>sigmaT*3?'#ef5350':'#ff9800';
+  document.getElementById('stConfidence').textContent=(alpha*100).toFixed(1)+'%';
+  document.getElementById('stConfidence').style.color=alpha>0.5?'#66bb6a':alpha>0.1?'#ffd54f':'#ef5350';
+  document.getElementById('stThreshold').textContent='±'+sigmaT;
+  document.getElementById('stThreshold').style.color=holdSteps>2*params.tau?'#ef5350':'#ffd54f';
+
+  const zoneEl=document.getElementById('stZone');
+  zoneEl.textContent=zone===1?'Zone1 三次有效':zone===2?'Zone2 二次退化':'Zone3 一次/失效';
+  zoneEl.className='zone-indicator '+(zone===1?'zone-1':zone===2?'zone-2':'zone-3');
+
+  // Verdict
+  let verdict='',vColor='#78909c';
+  const absEma=Math.abs(parseFloat(emaResid));
+  const absResid=Math.abs(parseFloat(resid));
+
+  if(zone===3&&absEma>sigmaT*2){
+    verdict='⚠️ Zone3 + 残差异常 → 强烈建议平仓！模型已基本失效，任何非零偏离都应触发退出。';
+    vColor='#ef5350';
+  }else if(alpha<0.1){
+    verdict='🔴 铁律三触发！α='+(alpha*100).toFixed(0)+'% < α_min=10%。一键止损——市价全出。';
+    vColor='#ef5350';
+  }else if(absResid>3*sigmaT&&absEma>3*sigmaT){
+    verdict='🔴 铁律五触发！|P_raw-P_smooth| > 3σ(t)。拔网线——跳过挂单，市价全出。';
+    vColor='#ef5350';
+  }else if(zone===2&&alpha<0.3){
+    verdict='🟡 Zone2 + 低自信度。建议保守退让——挂单向市价靠拢，准备离场。';
+    vColor='#ffd54f';
+  }else if(zone===1&&alpha>0.7){
+    verdict='✅ Zone1 + 高自信度。满仓持有——动态引力挂单紧贴预测谷底。';
+    vColor='#66bb6a';
+  }else if(zone===1){
+    verdict='✅ Zone1 内。模型处于三次有效区，正常监控即可。';
+    vColor='#66bb6a';
+  }else{
+    verdict='🟡 持仓中。持续监控残差和自信度变化趋势。';
+    vColor='#ffd54f';
+  }
+
+  const vel=document.getElementById('stVerdict');
+  vel.textContent=verdict;vel.style.color=vColor;
+  vel.style.background=vColor==='#66bb6a'?'#1b3a1b':vColor==='#ef5350'?'#3a1b1b':vColor==='#ffd54f'?'#3a3a1b':'#1a2a3a';
+}
+
+// ═══════════════════════════════════
+// Actions
+// ═══════════════════════════════════
+function runAnalysis(){
+  const params=p();
+  const n=100;
+  const data=generateSignal(params.sigType,n,params.noise);
+  const result=computeFit(data.noisy,data.t,params);
+  plotAll(data,result,params);
+  updateStatus(data,result,params);
+  // store for break injection
+  window._data=data;window._result=result;window._params=params;
+}
+
+function regenerate(){
+  breakInjected=false;
+  runAnalysis();
+}
+
+function refit(){
+  if(!window._data)return;
+  const params=p();
+  const result=computeFit(window._data.noisy,window._data.t,params);
+  plotAll(window._data,result,params);
+  updateStatus(window._data,result,params);
+  window._result=result;window._params=params;
+}
+
+function injectBreak(){
+  if(!window._data)return;
+  const data=window._data;
+  const idx=Math.floor(data.noisy.length*0.55); // inject just after entry
+  const jump=3+Math.random()*5; // 3-8% jump
+  for(let i=idx;i<data.noisy.length;i++)data.noisy[i]+=jump*(Math.random()>0.5?1:-1);
+  breakInjected=true;
+  refit();
+}
+
+function injectSpike(){
+  if(!window._data)return;
+  const data=window._data;
+  const idx=Math.floor(data.noisy.length*0.6);
+  const spike=8+Math.random()*12;
+  data.noisy[idx]+=spike*(Math.random()>0.5?1:-1);
+  breakInjected=true;
+  refit();
+}
+
+function onSlider(){
+  const params=p();
+  document.getElementById('noiseVal').textContent=params.noise.toFixed(2);
+  document.getElementById('fitWinVal').textContent=params.fitWindow;
+  document.getElementById('extrapVal').textContent=params.extrapSteps;
+  document.getElementById('tauDisp').textContent=params.tau.toFixed(1)+' min';
+  document.getElementById('sigma0Disp').textContent=params.sigma0.toFixed(2);
+  document.getElementById('sigmoidKDisp').textContent=params.sigK.toFixed(1);
+  document.getElementById('sigmoidBDisp').textContent=params.sigB.toFixed(2);
+  // Debounced refit
+  clearTimeout(window._sliderTimer);
+  window._sliderTimer=setTimeout(refit,200);
+}
+
+function resetAll(){
+  document.getElementById('noiseLvl').value=0.15;
+  document.getElementById('fitDegree').value='3';
+  document.getElementById('fitWindow').value=20;
+  document.getElementById('extrapSteps').value=15;
+  document.getElementById('tauVal').value=5;
+  document.getElementById('sigma0Val').value=0.5;
+  document.getElementById('sigmoidK').value=2.0;
+  document.getElementById('sigmoidB').value=-0.74;
+  document.getElementById('sigType').value='cubic';
+  onSlider();
+  regenerate();
+}
+
+// ═══════════════════════════════════
+// Init
+// ═══════════════════════════════════
+window.addEventListener('DOMContentLoaded',()=>{
+  onSlider();
+  setTimeout(runAnalysis,300);
+});
+</script>
+</body>
+</html>
