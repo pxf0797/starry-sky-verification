@@ -290,7 +290,7 @@ const plotBg='#1a2a3a',gridC='#2a4a6a',fontC='#e0e0e0';
 
 function plotAll(data, result, params){
   const {t,clean,noisy}=data;
-  const {coeffs,i0,fitEnd,tFit,yFit,tPred,yPred,residuals,smoothedResiduals,thresholds,confidences,zones,predStart,predEnd,lam}=result;
+  const {coeffs,i0,fitStart,fitEnd,tFit,yFit,tPred,yPred,residuals,smoothedResiduals,thresholds,confidences,zones,predStart,predEnd,lam}=result;
 
   // Confidence bands
   const residForBands=residuals.map(r=>r.resid);
