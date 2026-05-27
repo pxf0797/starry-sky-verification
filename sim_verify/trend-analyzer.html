@@ -66,7 +66,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
         <option value="pwlinear">分段线性</option>
       </select></div>
       <div class="ctrl"><label>数据点总数</label><div class="row"><input type="range" id="totalPoints" min="30" max="200" step="5" value="100" oninput="onSlider()"><span class="val" id="totalPtsVal">100</span></div></div>
-      <div class="ctrl"><label>开仓位置 %</label><div class="row"><input type="range" id="entryPos" min="20" max="80" step="1" value="40" oninput="onSlider()"><span class="val" id="entryPosVal">40%</span></div></div>
       <div class="ctrl"><label>噪声 σ</label><div class="row"><input type="range" id="noiseLvl" min="0" max="1" step="0.01" value="0.15" oninput="onSlider()"><span class="val" id="noiseVal">0.15</span></div></div>
       <div class="btn-row">
         <button class="btn-blue" onclick="regenerate()">🔄 重新生成</button>
@@ -84,14 +83,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       <div style="font-size:.68em;color:#78909c;margin-top:4px">拖动滑块或点击播放，逐帧观察持仓期间残差和自信度的变化</div>
     </div>
 
-    <div class="panel"><h3>拟合参数</h3>
+    <div class="panel"><h3>拟合区间</h3>
       <div class="ctrl"><label>多项式阶数 k</label><select id="fitDegree" onchange="refit()">
         <option value="1">k=1 一次 (直线)</option><option value="2">k=2 二次 (抛物线)</option>
         <option value="3" selected>k=3 三次 (S曲线) ★推荐</option>
         <option value="4">k=4 四次</option><option value="5">k=5 五次</option>
       </select></div>
-      <div class="ctrl"><label>拟合窗口 (数据点)</label><div class="row"><input type="range" id="fitWindow" min="8" max="40" step="1" value="20" oninput="onSlider()"><span class="val" id="fitWinVal">20</span></div></div>
+      <div class="ctrl"><label>拟合起点 %</label><div class="row"><input type="range" id="fitStartPos" min="0" max="75" step="1" value="20" oninput="onSlider()"><span class="val" id="fitStartVal">20%</span></div></div>
+      <div class="ctrl"><label>开仓位置 % (拟合终点)</label><div class="row"><input type="range" id="entryPos" min="25" max="85" step="1" value="45" oninput="onSlider()"><span class="val" id="entryPosVal">45%</span></div></div>
+      <div class="ctrl"><label>拟合点数 (自动)</label><div class="row"><span class="val" id="fitPtsVal" style="color:#ff9800;min-width:60px">--</span></div></div>
       <div class="ctrl"><label>外推预测 (数据点)</label><div class="row"><input type="range" id="extrapSteps" min="5" max="40" step="1" value="15" oninput="onSlider()"><span class="val" id="extrapVal">15</span></div></div>
+      <div class="btn-row">
+        <button class="btn-blue" onclick="refit()">📐 重新拟合</button>
+        <button class="btn-grey" onclick="resetAll()">↺ 重置默认</button>
+      </div>
+      <div style="font-size:.65em;color:#78909c;margin-top:4px;line-height:1.6">
+        图上<span style="color:#ce93d8">●紫色点</span>=波峰 <span style="color:#80cbc4">●青色点</span>=波谷<br>
+        拖动拟合起点/终点对齐多个波峰波谷
+      </div>
     </div>
 
     <div class="panel"><h3>策略参数</h3>
@@ -167,9 +176,9 @@ function p(){
     sigType: document.getElementById('sigType').value,
     totalPoints: parseInt(document.getElementById('totalPoints').value),
     entryPos: parseInt(document.getElementById('entryPos').value),
+    fitStartPos: parseInt(document.getElementById('fitStartPos').value),
     noise: parseFloat(document.getElementById('noiseLvl').value),
     degree: parseInt(document.getElementById('fitDegree').value),
-    fitWindow: parseInt(document.getElementById('fitWindow').value),
     extrapSteps: parseInt(document.getElementById('extrapSteps').value),
     tau: parseFloat(document.getElementById('tauVal').value),
     sigma0: parseFloat(document.getElementById('sigma0Val').value),
@@ -234,9 +243,9 @@ function generateSignal(type, n, noise){
 // Core: fit + predict + residual
 // ═══════════════════════════════════
 function computeFit(noisy, t, params){
-  const i0=Math.floor(noisy.length*params.entryPos/100); // entry = 预测起点
-  const fitStart=Math.max(0,i0-params.fitWindow);        // 拟合数据在开仓前
-  const fitEnd=i0;                                        // 拟合结束于开仓位置
+  const i0=Math.floor(noisy.length*params.entryPos/100);      // entry = 预测起点
+  const fitStart=Math.floor(noisy.length*params.fitStartPos/100); // 拟合起点 (可调)
+  const fitEnd=i0;                                               // 拟合结束于开仓位置
   const tFit=t.slice(fitStart,fitEnd);
   const yFit=noisy.slice(fitStart,fitEnd);
   const coeffs=polyfit(tFit,yFit,params.degree);
@@ -310,6 +319,13 @@ function plotAll(data, result, params){
   const a=coeffs[0],b=coeffs[1];
   const inflT=Math.abs(a)>1e-10?-b/(3*a):null;
 
+  // Peak/trough detection on noisy price
+  const peaks=[],troughs=[];
+  for(let i=1;i<noisy.length-1;i++){
+    if(noisy[i]>noisy[i-1]&&noisy[i]>noisy[i+1])peaks.push({t:t[i],y:noisy[i]});
+    if(noisy[i]<noisy[i-1]&&noisy[i]<noisy[i+1])troughs.push({t:t[i],y:noisy[i]});
+  }
+
   // Full cubic curve: from fitting start through prediction end
   const tFull=t.slice(fitStart,predEnd);
   const yFull=tFull.map(ti=>polyval(coeffs,ti));
@@ -330,6 +346,11 @@ function plotAll(data, result, params){
     // entry line
     {x:[t[i0],t[i0]],y:[Math.min(...noisy)-0.5,Math.max(...noisy)+0.5],type:'scatter',mode:'lines',
       line:{color:'rgba(255,255,255,0.3)',width:1,dash:'dot'},name:'开仓点',hoverinfo:'skip'},
+    // peaks & troughs
+    {x:peaks.map(p=>p.t),y:peaks.map(p=>p.y),type:'scatter',mode:'markers',
+      marker:{size:6,color:'#ce93d8',symbol:'triangle-down'},name:'波峰',hoverinfo:'skip'},
+    {x:troughs.map(p=>p.t),y:troughs.map(p=>p.y),type:'scatter',mode:'markers',
+      marker:{size:6,color:'#80cbc4',symbol:'triangle-up'},name:'波谷',hoverinfo:'skip'},
   ];
 
   // Inflection point marker
@@ -706,9 +727,9 @@ function loadParamsFromURL(){
     const params=JSON.parse(atob(window.location.hash.slice(1)));
     if(params.totalPoints)document.getElementById('totalPoints').value=params.totalPoints;
     if(params.entryPos)document.getElementById('entryPos').value=params.entryPos;
+    if(params.fitStartPos)document.getElementById('fitStartPos').value=params.fitStartPos;
     if(params.noise!==undefined)document.getElementById('noiseLvl').value=params.noise;
     if(params.degree)document.getElementById('fitDegree').value=params.degree;
-    if(params.fitWindow)document.getElementById('fitWindow').value=params.fitWindow;
     if(params.extrapSteps)document.getElementById('extrapSteps').value=params.extrapSteps;
     if(params.tau)document.getElementById('tauVal').value=params.tau;
     if(params.sigma0)document.getElementById('sigma0Val').value=params.sigma0;
@@ -772,8 +793,11 @@ function onSlider(){
   const params=p();
   document.getElementById('totalPtsVal').textContent=params.totalPoints;
   document.getElementById('entryPosVal').textContent=params.entryPos+'%';
+  document.getElementById('fitStartVal').textContent=params.fitStartPos+'%';
   document.getElementById('noiseVal').textContent=params.noise.toFixed(2);
-  document.getElementById('fitWinVal').textContent=params.fitWindow;
+  // derived: fitting points = entry position - fit start position
+  const fitPts=Math.round(params.totalPoints*(params.entryPos-params.fitStartPos)/100);
+  document.getElementById('fitPtsVal').textContent=fitPts+' 点';
   document.getElementById('extrapVal').textContent=params.extrapSteps;
   document.getElementById('tauDisp').textContent=params.tau.toFixed(1)+' min';
   document.getElementById('sigma0Disp').textContent=params.sigma0.toFixed(2);
@@ -786,10 +810,10 @@ function onSlider(){
 
 function resetAll(){
   document.getElementById('totalPoints').value=100;
-  document.getElementById('entryPos').value=40;
+  document.getElementById('entryPos').value=45;
+  document.getElementById('fitStartPos').value=20;
   document.getElementById('noiseLvl').value=0.15;
   document.getElementById('fitDegree').value='3';
-  document.getElementById('fitWindow').value=20;
   document.getElementById('extrapSteps').value=15;
   document.getElementById('tauVal').value=5;
   document.getElementById('sigma0Val').value=0.5;
