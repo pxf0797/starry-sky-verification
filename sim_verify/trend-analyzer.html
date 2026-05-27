@@ -67,6 +67,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       </select></div>
       <div class="ctrl"><label>数据点总数</label><div class="row"><input type="range" id="totalPoints" min="30" max="200" step="5" value="100" oninput="onSlider()"><span class="val" id="totalPtsVal">100</span></div></div>
       <div class="ctrl"><label>噪声 σ</label><div class="row"><input type="range" id="noiseLvl" min="0" max="1" step="0.01" value="0.15" oninput="onSlider()"><span class="val" id="noiseVal">0.15</span></div></div>
+      <div class="ctrl"><label>EMA 周期</label><div class="row"><input type="range" id="emaPeriod" min="2" max="30" step="1" value="9" oninput="onSlider()"><span class="val" id="emaPeriodVal">9</span></div></div>
       <div class="btn-row">
         <button class="btn-blue" onclick="regenerate()">🔄 重新生成</button>
         <button class="btn-orange" onclick="injectBreak()">⚡ 注入断点</button>
@@ -98,9 +99,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
         <button class="btn-grey" onclick="resetAll()">↺ 重置默认</button>
       </div>
       <div style="font-size:.65em;color:#78909c;margin-top:4px;line-height:1.6">
-        图上<span style="color:#ce93d8">▼紫色</span>=波峰 <span style="color:#80cbc4">▲青色</span>=波谷<br>
-        检测: P[i-1]&lt;P[i]&gt;P[i+1]→峰, P[i-1]&gt;P[i]&lt;P[i+1]→谷<br>
-        拖动拟合起点/终点使其跨越多个完整波动
+        图上<span style="color:#ce93d8">▼</span>=波峰 <span style="color:#80cbc4">▲</span>=波谷<br>
+        <b>原始检测</b>: P[i-1]&lt;P[i]&gt;P[i+1]→峰<br>
+        <b>EMA检测</b>: EMA斜率由正变负→峰(粗边标记)<br>
+        拖动拟合起点/终点使其跨越≥3个极值点<br>
+        极值拟合: 用3个极值+开仓点→预测下一极值★
       </div>
     </div>
 
@@ -115,12 +118,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Heiti SC",sans-
       </div>
     </div>
 
-    <div class="panel"><h3>拟合系数 P(t)=a·t³+b·t²+c·t+d</h3>
-      <div style="font-size:.7em;line-height:1.7">
-        <div>a = <span id="coefA" style="color:#ef5350;font-weight:bold">--</span> <span style="color:#78909c">(jerk·½, 拐点信号)</span></div>
-        <div>b = <span id="coefB" style="color:#ff9800;font-weight:bold">--</span> <span style="color:#78909c">(½·加速度A, 动量变化)</span></div>
-        <div>c = <span id="coefC" style="color:#ffd54f;font-weight:bold">--</span> <span style="color:#78909c">(速度V, 趋势方向)</span></div>
-        <div>d = <span id="coefD" style="color:#64b5f6;font-weight:bold">--</span> <span style="color:#78909c">(价格P₀, 盈亏基准)</span></div>
+    <div class="panel"><h3>拟合系数</h3>
+      <div style="font-size:.68em;line-height:1.6">
+        <div style="color:#90caf9;margin-bottom:2px">最小二乘拟合 (LSQ):</div>
+        <div>a=<span id="coefA" style="color:#ef5350;font-weight:bold">--</span> b=<span id="coefB" style="color:#ff9800;font-weight:bold">--</span></div>
+        <div>c=<span id="coefC" style="color:#ffd54f;font-weight:bold">--</span> d=<span id="coefD" style="color:#64b5f6;font-weight:bold">--</span></div>
+        <div style="margin-top:3px;color:#90caf9;margin-bottom:2px">极值拟合 (3极值+开仓点):</div>
+        <div style="min-height:1.2em"><span id="coefExtrema" style="color:#ce93d8;font-weight:bold">--</span></div>
         <div style="margin-top:3px;border-top:1px solid #2a4a6a;padding-top:3px">
           开仓处: <span style="color:#ffd54f">V=</span><span id="entryV" style="color:#ffd54f;font-weight:bold">--</span>
           <span style="color:#ff9800">A=</span><span id="entryA" style="color:#ff9800;font-weight:bold">--</span>
@@ -199,7 +203,15 @@ function p(){
     sigma0: parseFloat(document.getElementById('sigma0Val').value),
     sigK: parseFloat(document.getElementById('sigmoidK').value),
     sigB: parseFloat(document.getElementById('sigmoidB').value),
+    emaPeriod: parseInt(document.getElementById('emaPeriod').value),
   };
+}
+
+function computeEMA(data, period){
+  const alpha=2/(period+1);
+  const ema=[data[0]];
+  for(let i=1;i<data.length;i++)ema.push(alpha*data[i]+(1-alpha)*ema[i-1]);
+  return ema;
 }
 
 // ═══════════════════════════════════
@@ -252,6 +264,41 @@ function generateSignal(type, n, noise){
   }
   const noisy=clean.map(c=>c+randn()*noise);
   return {t,clean,noisy};
+}
+
+// ═══════════════════════════════════
+// Extrema-based cubic fit
+// ═══════════════════════════════════
+function fitCubicFromExtrema(extrema, entryT, entryY){
+  // Use 3 most recent extrema + entry point = 4 points to fit cubic
+  if(extrema.length<3)return null;
+  const pts=extrema.slice(-3);
+  // Sort by time
+  pts.sort((a,b)=>a.t-b.t);
+  const xs=[pts[0].t,pts[1].t,pts[2].t,entryT];
+  const ys=[pts[0].y,pts[1].y,pts[2].y,entryY];
+  try{
+    return polyfit(xs,ys,3);
+  }catch(e){return null;}
+}
+
+function predictNextExtremum(coeffs, tRange){
+  // Find where P'(t)=0 (extrema of cubic), return the one after the last known point
+  const a=coeffs[0],b=coeffs[1],c=coeffs[2];
+  if(Math.abs(a)<1e-10)return null;
+  // P'(t) = 3a*t² + 2b*t + c = 0
+  const disc=4*b*b-12*a*c;
+  if(disc<0)return null;
+  const t1=(-2*b+Math.sqrt(disc))/(6*a);
+  const t2=(-2*b-Math.sqrt(disc))/(6*a);
+  const nextT=Math.max(t1,t2);
+  if(nextT>tRange[0]&&nextT<tRange[1]){
+    const nextY=polyval(coeffs,nextT);
+    // Determine if peak or trough
+    const d2=6*a*nextT+2*b;
+    return {t:nextT,y:nextY,type:d2<0?'peak':'trough'};
+  }
+  return null;
 }
 
 // ═══════════════════════════════════
@@ -334,12 +381,28 @@ function plotAll(data, result, params){
   const a=coeffs[0],b=coeffs[1];
   const inflT=Math.abs(a)>1e-10?-b/(3*a):null;
 
-  // Peak/trough detection on noisy price
+  // EMA curve
+  const ema=computeEMA(noisy,params.emaPeriod||9);
+  const emaSlope=ema.map((v,i)=>i>0?v-ema[i-1]:0);
+
+  // Peak/trough detection: raw price + EMA slope zero-crossing
   const peaks=[],troughs=[];
+  const emaPeaks=[],emaTroughs=[];
   for(let i=1;i<noisy.length-1;i++){
     if(noisy[i]>noisy[i-1]&&noisy[i]>noisy[i+1])peaks.push({t:t[i],y:noisy[i]});
     if(noisy[i]<noisy[i-1]&&noisy[i]<noisy[i+1])troughs.push({t:t[i],y:noisy[i]});
+    // EMA slope zero-crossing → turning point
+    if(i>=2&&emaSlope[i-1]>0&&emaSlope[i]<=0)emaPeaks.push({t:t[i],y:ema[i]});
+    if(i>=2&&emaSlope[i-1]<0&&emaSlope[i]>=0)emaTroughs.push({t:t[i],y:ema[i]});
   }
+
+  // All extrema (both raw and EMA) for cubic fit
+  const allExtrema=[...peaks,...troughs].sort((a,b)=>a.t-b.t);
+
+  // Extrema-based cubic: use 3 extrema in fitting window + entry point
+  const fitExtrema=allExtrema.filter(p=>p.t>=t[result.fitStart]&&p.t<=t[i0]);
+  const extremaCoeffs=fitExtrema.length>=3?fitCubicFromExtrema(fitExtrema,t[i0],noisy[i0]):null;
+  const nextExtremum=extremaCoeffs?predictNextExtremum(extremaCoeffs,[t[i0],t[predEnd-1]]):null;
 
   // Full cubic curve: from fitting start through prediction end
   const tFull=t.slice(fitStart,predEnd);
@@ -349,6 +412,7 @@ function plotAll(data, result, params){
   const traces1=[
     {x:t,y:clean,type:'scatter',mode:'lines',name:'真实信号',line:{color:'rgba(120,144,156,0.3)',width:1,dash:'dot'},hoverinfo:'skip'},
     {x:t,y:noisy,type:'scatter',mode:'lines',name:'观测价格',line:{color:plotColors.price,width:2.2}},
+    {x:t,y:ema,type:'scatter',mode:'lines',name:`EMA(${params.emaPeriod||9})`,line:{color:'#ce93d8',width:1.8}},
     // Full cubic curve (continuous)
     {x:tFull,y:yFull,type:'scatter',mode:'lines',name:`完整k=${params.degree}曲线`,line:{color:plotColors.pred,width:1.8},opacity:0.5},
     {x:tFit,y:yFit,type:'scatter',mode:'markers',name:'拟合窗口',marker:{color:plotColors.fit,size:5,symbol:'circle-open'}},
@@ -361,11 +425,31 @@ function plotAll(data, result, params){
     // entry line
     {x:[t[i0],t[i0]],y:[Math.min(...noisy)-0.5,Math.max(...noisy)+0.5],type:'scatter',mode:'lines',
       line:{color:'rgba(255,255,255,0.3)',width:1,dash:'dot'},name:'开仓点',hoverinfo:'skip'},
-    // peaks & troughs
+    // Extrema-fit cubic curve
+    ...(extremaCoeffs?[{
+      x:tFull,y:tFull.map(ti=>polyval(extremaCoeffs,ti)),
+      type:'scatter',mode:'lines',name:'极值拟合(3极值+开仓)',line:{color:'#ce93d8',width:2.2,dash:'dashdot'}}]:[]),
+    // Next extremum prediction
+    ...(nextExtremum?[{
+      x:[nextExtremum.t],y:[nextExtremum.y],
+      type:'scatter',mode:'markers+text',name:`预测${nextExtremum.type==='peak'?'波峰':'波谷'}`,
+      marker:{size:14,color:'#ce93d8',symbol:'star'},
+      text:[`预测${nextExtremum.type==='peak'?'峰':'谷'} t=${nextExtremum.t.toFixed(2)}`],
+      textposition:'top center',textfont:{color:'#ce93d8',size:10}}]:[]),
+    // EMA-based peaks/troughs
+    {x:emaPeaks.map(p=>p.t),y:emaPeaks.map(p=>p.y),type:'scatter',mode:'markers',
+      marker:{size:8,color:'#ce93d8',symbol:'triangle-down',line:{width:1,color:'#fff'}},
+      name:'EMA波峰(斜率过零)',hoverinfo:'skip'},
+    {x:emaTroughs.map(p=>p.t),y:emaTroughs.map(p=>p.y),type:'scatter',mode:'markers',
+      marker:{size:8,color:'#80cbc4',symbol:'triangle-up',line:{width:1,color:'#fff'}},
+      name:'EMA波谷(斜率过零)',hoverinfo:'skip'},
+    // raw peaks & troughs
     {x:peaks.map(p=>p.t),y:peaks.map(p=>p.y),type:'scatter',mode:'markers',
-      marker:{size:6,color:'#ce93d8',symbol:'triangle-down'},name:'波峰',hoverinfo:'skip'},
+      marker:{size:5,color:'rgba(206,147,216,0.4)',symbol:'triangle-down'},
+      name:'原始波峰',hoverinfo:'skip'},
     {x:troughs.map(p=>p.t),y:troughs.map(p=>p.y),type:'scatter',mode:'markers',
-      marker:{size:6,color:'#80cbc4',symbol:'triangle-up'},name:'波谷',hoverinfo:'skip'},
+      marker:{size:5,color:'rgba(128,203,196,0.4)',symbol:'triangle-up'},
+      name:'原始波谷',hoverinfo:'skip'},
   ];
 
   // Inflection point marker
@@ -401,6 +485,10 @@ function plotAll(data, result, params){
       ...anns,
     ],
   };
+
+  // Store extrema-fit results for coefficient panel
+  window._extremaCoeffs=extremaCoeffs;
+  window._nextExtremum=nextExtremum;
 
   Plotly.react('plotMain',traces1,layout1);
 
@@ -566,6 +654,20 @@ function updateStatus(data, result, params){
     lbEl.style.color='#ef5350';
     document.getElementById('fitAdvice').textContent='残差存在自相关→模型可能遗漏了系统性的价格模式，考虑调整阶数或拟合窗口';
     document.getElementById('fitAdvice').style.color='#ff9800';
+  }
+
+  // Extrema-fit coefficients
+  if(window._extremaCoeffs&&window._extremaCoeffs.length===4){
+    const [ea,eb,ec,ed]=window._extremaCoeffs;
+    document.getElementById('coefExtrema').textContent=
+      `a=${ea.toFixed(4)} b=${eb.toFixed(4)} c=${ec.toFixed(4)} d=${ed.toFixed(2)}`;
+  }else{
+    document.getElementById('coefExtrema').textContent='(需要拟合区间内≥3个极值点)';
+  }
+  if(window._nextExtremum){
+    const ne=window._nextExtremum;
+    document.getElementById('coefExtrema').textContent+=
+      ` → 预测${ne.type==='peak'?'峰':'谷'}@t=${ne.t.toFixed(2)} y=${ne.y.toFixed(2)}`;
   }
 
   // Update discriminant
@@ -769,6 +871,7 @@ function loadParamsFromURL(){
     if(params.sigma0)document.getElementById('sigma0Val').value=params.sigma0;
     if(params.sigK)document.getElementById('sigmoidK').value=params.sigK;
     if(params.sigB)document.getElementById('sigmoidB').value=params.sigB;
+    if(params.emaPeriod)document.getElementById('emaPeriod').value=params.emaPeriod;
     if(params.sigType)document.getElementById('sigType').value=params.sigType;
     onSlider();
     return true;
@@ -837,6 +940,7 @@ function onSlider(){
   document.getElementById('sigma0Disp').textContent=params.sigma0.toFixed(2);
   document.getElementById('sigmoidKDisp').textContent=params.sigK.toFixed(1);
   document.getElementById('sigmoidBDisp').textContent=params.sigB.toFixed(2);
+  document.getElementById('emaPeriodVal').textContent=params.emaPeriod;
   // Debounced refit
   clearTimeout(window._sliderTimer);
   window._sliderTimer=setTimeout(refit,200);
@@ -853,6 +957,7 @@ function resetAll(){
   document.getElementById('sigma0Val').value=0.5;
   document.getElementById('sigmoidK').value=2.0;
   document.getElementById('sigmoidB').value=-0.74;
+  document.getElementById('emaPeriod').value=9;
   document.getElementById('sigType').value='cubic';
   onSlider();
   regenerate();
