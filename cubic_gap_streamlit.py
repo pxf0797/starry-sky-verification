@@ -247,7 +247,7 @@ st.set_page_config(page_title="三次曲线极值差(Δy)动态探索", page_ico
 
 for k, v in dict(a=1., b=0., c=-3., d=0., sampled=False, params=None,
                  dy_values=None, search_done=False, champion=None, top20=None,
-                 n_sampled=0, mean_dy=0., median_dy=0., p99_dy=0.).items():
+                 n_sampled=0, mean_dy=0., median_dy=0., p99_dy=0., pending_load=None).items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -255,6 +255,12 @@ for k, v in dict(a=1., b=0., c=-3., d=0., sampled=False, params=None,
 if "default_params" not in st.session_state:
     st.session_state["default_params"], st.session_state["default_dy"] = \
         sample_params(1000, 200., "uniform", 0)
+
+# 处理"加载"按钮的延迟同步（避免widget后修改session_state冲突）
+if st.session_state.get("pending_load"):
+    ai, bi, ci = st.session_state["pending_load"]
+    st.session_state.update(a=float(ai), b=float(bi), c=float(ci))
+    st.session_state["pending_load"] = None
 
 # ── 标题 ──
 
@@ -480,7 +486,7 @@ with t3:
             rc[5].write(f"{dyi:.2f}")
             rc[6].write(f"{np.log10(max(dyi,1e-30)):.4f}")
             if rc[7].button("加载", key=f"lr_{i}", use_container_width=True):
-                st.session_state.update(a=float(ai), b=float(bi), c=float(ci))
+                st.session_state["pending_load"] = (float(ai), float(bi), float(ci))
                 st.rerun()
     else:
         st.info("点击 **:rocket: 搜索最大 Δy** 开始三阶段优化", icon="💡")
